@@ -1,0 +1,6 @@
+[submodule "external/mechatronics-software"]
+	path = external/mechatronics-software
+	url = git@github.com:urill/mechatronics-software.git
+[submodule "external/imgui"]
+	path = external/imgui
+	url = git@github.com:ocornut/imgui.git
