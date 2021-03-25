@@ -29,7 +29,7 @@ set_property(TARGET dractweak PROPERTY CXX_STANDARD 20)
 include_directories("${IMGUI_PATH};${IMGUI_PATH}/backends")
 target_sources(dractweak 
     PUBLIC 
-    "${CMAKE_CURRENT_SOURCE_DIR}/Amp1394Console.cpp"
+    # "${CMAKE_CURRENT_SOURCE_DIR}/Amp1394Console.cpp"
     "${IMGUI_PATH}/imgui.cpp"
     "${IMGUI_PATH}/imgui_draw.cpp"
     "${IMGUI_PATH}/imgui_demo.cpp"

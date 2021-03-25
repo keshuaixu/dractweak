@@ -28,6 +28,106 @@ int dac_count_from_current(float current) {
     return std::clamp(result, 0, 0xffff);
 }
 
+uint16_t pi_fixed_from_float(float val) {
+    int result = int(val * 4096);
+    return std::clamp(result, 0, 0xffff);
+}
+
+const char* current_format = "% .03f A";
+const float current_max = 4.5; 
+
+AmpIO *board;
+BasePort *Port;
+int BoardId = 0;
+float Imax = current_from_adc_count(0xffff);
+
+int axis = 1;
+float i_setp;
+int mode;
+
+int float_to_fixed = 4096;
+float kp, ki;
+int ilim, olim;
+
+void draw_poke_window() {
+    ImGui::Begin("No broadcast",0);
+    ImGui::SliderInt("axis", &axis, 1, 10);
+    ImGui::Separator();
+
+    quadlet_t current_q;
+    Port->ReadQuadlet(BoardId, (axis) << 4 | 0x00, current_q);
+    uint16_t current = static_cast<uint16_t>(current_q & 0xffff);
+    ImGui::LabelText("I meas hex", "0x%04X", current);
+    float im = current_from_adc_count(current);
+    ImGui::LabelText("I meas", current_format, im);
+    ImGui::Separator();
+
+    quadlet_t i_setp_q;
+    Port->ReadQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
+    ImGui::LabelText("setp hex", "0x%04X", i_setp_q);
+    i_setp = current_from_adc_count(i_setp_q);
+    ImGui::DragFloat("setp", &i_setp, 0.001, -current_max, current_max, current_format);
+    bool setp_edited = ImGui::IsItemEdited();
+    i_setp_q = dac_count_from_current(i_setp);
+    // uint32_t zero = 0;
+    // uint32_t ffff = 0xffff;
+    // ImGui::InputScalar("setp hex",ImGuiDataType_U32 ,&i_setp_q,(uint32_t) 1, "0x%04X");
+    if (setp_edited || ImGui::IsItemEdited()) {
+        Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
+    }
+    if (ImGui::Button("0")) {
+        i_setp = 0;
+        Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, 0x8000);
+    }
+    ImGui::Separator();
+
+    int mode_read = board->ReadMotorControlMode(axis - 1);
+    if (ImGui::RadioButton("reset", mode_read == AmpIO::MotorControlMode::RESET)) {
+        if (ImGui::IsItemEdited()) {
+            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::RESET);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("voltage", mode_read == AmpIO::MotorControlMode::VOLTAGE)) {
+        if (ImGui::IsItemEdited()) {
+            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::VOLTAGE);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("current", mode_read == AmpIO::MotorControlMode::CURRENT)) {
+        if (ImGui::IsItemEdited()) {
+            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::CURRENT);
+        }
+    }
+
+    if (true || ImGui::Button("read")) {
+        kp = (float) board->ReadCurrentKpRaw(axis - 1) / float_to_fixed;
+        ki = (float) board->ReadCurrentKiRaw(axis - 1) / float_to_fixed;
+        ilim = board->ReadCurrentITermLimitRaw(axis - 1);
+        olim = board->ReadDutyCycleLimit(axis - 1);
+    }
+
+    ImGui::DragFloat("kp", &kp, 0.0002, 0, 2, "%.4f");
+    if (ImGui::IsItemEdited()) {
+        board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
+    }
+    ImGui::DragFloat("ki", &ki, 0.0002, 0, 2, "%.4f");
+    if (ImGui::IsItemEdited()) {
+        board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(ki));
+    }
+    ImGui::InputInt("i term lim", &ilim, 1, 10);
+    if (ImGui::IsItemEdited()) {
+        board->WriteCurrentITermLimitRaw(axis - 1, ilim);
+    }
+    ImGui::InputInt("duty cycle lim", &olim, 1, 10);    
+        if (ImGui::IsItemEdited()) {
+        board->WriteDutyCycleLimit(axis - 1, olim);
+    }
+
+    ImGui::End();
+}
+
+
 int main(int, char**)
 {
     // Setup window
@@ -42,7 +142,7 @@ int main(int, char**)
     //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
 
     // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "dRAC tweak", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(1440, 720, "dRAC tweak", NULL, NULL);
     if (window == NULL)
         return 1;
     glfwMakeContextCurrent(window);
@@ -102,8 +202,8 @@ int main(int, char**)
     unsigned int curAxisIndex = 0;
     char axisString[4] = "all";
     std::string portDescription;
-    AmpIO *board = new AmpIO(0);
-    BasePort *Port = PortFactory(portDescription.c_str(), std::cout);
+    board = new AmpIO(BoardId);
+    Port = PortFactory(portDescription.c_str(), std::cout);
     Port->AddBoard(board);
 
     int num_axes = 10;
@@ -128,35 +228,86 @@ int main(int, char**)
         ImGui::NewFrame();
 
 
-        const char* current_format = "% .04f A";
-        const float current_max = 4.5; 
 
-        ImGui::Begin("Hello, world!");
+        ImGui::SetNextWindowPos( ImVec2(0,0) );
+        int glfw_window_width, glfw_window_height;
+        glfwGetWindowSize(window, &glfw_window_width, &glfw_window_height);
+        // ImGui::SetNextWindowSize(ImVec2(glfw_window_width, glfw_window_height));
+        // ImGui::Begin("dRAC",0 , ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+        ImGui::Begin("dRAC",0);
+        if (ImGui::TreeNodeEx("board", ImGuiTreeNodeFlags_DefaultOpen)){
+            ImGui::BeginTable("boardtable", 5);
+            ImGui::TableNextColumn();
+            // ImGui::AlignTextToFramePadding();
+            ImGui::LabelText("motor power command", "%s", board->GetPowerEnable() ? "on" : "off");
+            ImGui::LabelText("48V voltage", "%.2f", 0);
+            // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
+            ImGui::Button("off");
+            ImGui::SameLine();
+            ImGui::Button("on");
+            ImGui::TableNextColumn();
+            ImGui::LabelText("relay command", "%s", board->GetSafetyRelay() ? "close" : "open");
+            ImGui::LabelText("relay feedback", "%s", board->GetSafetyRelayStatus() ? "close" : "open");
+            ImGui::LabelText("safety chain", "s", "blah");
+            ImGui::Button("close");
+            ImGui::SameLine();
+            ImGui::Button("open");
+            ImGui::TableNextColumn();
+            ImGui::LabelText("espm power command", "%s", board->GetPowerEnable() ? "on" : "off");
+            ImGui::LabelText("espm power good", "%s", "blah");
+            ImGui::Button("off");
+            ImGui::SameLine();
+            ImGui::Button("on");
+            // ImGui::SameLine();
+            ImGui::EndTable();
+
+            ImGui::TreePop();
+
+        }
         for (int axis_index = 0; axis_index < num_axes; axis_index++) {
             char window_name[32];
-            sprintf(window_name, "Axis %d", axis_index);
-            ImGui::BeginChild(window_name, ImVec2(120, 0), true);
-            // ImGui::Text("cur adc");
-            motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
-            ImGui::DragInt("Im", &(motor_current_read[axis_index]),0.1f, 0, 0xffff,"0x%04X");
-            float im = current_from_adc_count(motor_current_read[axis_index]);
-            ImGui::SliderFloat("##Im2", &im, -current_max, current_max, current_format);
-            // ImGui::Text("0x%04X", motor_current_read[axis_index]);
-            ImGui::Separator();
-            ImGui::DragFloat("Is", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
-            ImGui::Button("0");
-            ImGui::SameLine();
-            ImGui::Button(".1");
-            ImGui::SameLine();
-            ImGui::Button("1");      
-            ImGui::Separator();
+            sprintf(window_name, "Axis %d", axis_index + 1);
+            // ImGui::BeginChild(window_name, ImVec2(200, 0), true, ImGuiWindowFlags_None);
+            if (ImGui::TreeNodeEx(window_name, ImGuiTreeNodeFlags_DefaultOpen)){
+                ImGui::BeginTable("ax", 4);
+                ImGui::TableNextColumn();
 
+
+                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
+                // ImGui::DragInt("Im", &(motor_current_read[axis_index]),0.1f, 0, 0xffff,"0x%04X");
+                // ImGui::BulletText("Im");
+                ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
+                float im = current_from_adc_count(motor_current_read[axis_index]);
+                ImGui::LabelText("I", current_format, im);
+                // ImGui::ProgressBar(std::abs(im)/Imax,ImVec2(0.0f, 0.0f),"");
+                // ImGui::Text("0x%04X", motor_current_read[axis_index]);
+
+                ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
+                ImGui::Button("0");
+                ImGui::SameLine();
+                ImGui::Button(".1");
+                ImGui::SameLine();
+                ImGui::Button("1");      
+                ImGui::TableNextColumn();
+
+                static float f0 = 0.001f;
+                static int i0 = 0;
+                ImGui::DragFloat("kp", &f0, 0.0002, 0, 2, "%.4f");
+                ImGui::DragFloat("ki", &f0, 0.0002, 0, 2, "%.4f");
+                ImGui::InputInt("i term lim", &i0, 1, 10);
+                ImGui::InputInt("duty cycle lim", &i0, 1, 10);
+
+                ImGui::EndTable();
+                ImGui::TreePop();
+            }
             // ImGui::Text("%.04f A", im);
-            ImGui::EndChild();
-            ImGui::SameLine();
+            // ImGui::EndChild();
+            // ImGui::SameLine();
         }
 
         ImGui::End();
+
+        draw_poke_window();
 
 
         // Rendering
