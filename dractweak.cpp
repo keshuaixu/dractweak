@@ -106,7 +106,16 @@ void draw_poke_window() {
         ilim = board->ReadCurrentITermLimitRaw(axis - 1);
         olim = board->ReadDutyCycleLimit(axis - 1);
     }
-
+    if (ImGui::Button("load default")) {
+        kp = 0.01;
+        ki = 0.01;
+        ilim = 1020;
+        olim = 1020;
+        board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
+        board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(ki));
+        board->WriteCurrentITermLimitRaw(axis - 1, ilim);
+        board->WriteDutyCycleLimit(axis - 1, olim);
+    }
     ImGui::DragFloat("kp", &kp, 0.0002, 0, 2, "%.4f");
     if (ImGui::IsItemEdited()) {
         board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
