@@ -51,7 +51,20 @@ int ilim, olim;
 
 void draw_poke_window() {
     ImGui::Begin("No broadcast",0);
-    ImGui::SliderInt("axis", &axis, 1, 10);
+    if (ImGui::Button("reboot")) {
+        board->WriteReboot();
+    }
+    // ImGui::SliderInt("axis", &axis, 1, 10);
+    for (int i = 1; i < 11; i ++) {
+        char button_name[16];
+        sprintf(button_name, "%d", i);
+        if (ImGui::RadioButton(button_name, i == axis)) {
+            axis = i;
+        }
+        if (i < 10) {
+            ImGui::SameLine();
+        }
+    }
     ImGui::Separator();
 
     quadlet_t current_q;
@@ -61,6 +74,21 @@ void draw_poke_window() {
     float im = current_from_adc_count(current);
     ImGui::LabelText("I meas", current_format, im);
     ImGui::Separator();
+    ImGui::LabelText("duty cycle", "%d", board->ReadDutyCycle(axis - 1));
+    uint32_t fault = board->ReadFault(axis - 1);
+    ImGui::LabelText("fault", "%X", fault);
+    quadlet_t debug;
+    Port->ReadQuadlet(BoardId, (axis) << 4 | 0x0f | 0x9000, debug);
+    ImGui::LabelText("debug", "0x%08X", debug);
+    // printf("0x%08X ", debug);
+    ImGui::RadioButton("overheat", fault & 1 << 3);
+    ImGui::SameLine();
+    ImGui::RadioButton("overcurrent", fault & 1 << 2);
+    ImGui::SameLine();   
+    ImGui::RadioButton("regulation", fault & 1 << 1);
+    ImGui::SameLine();
+    ImGui::RadioButton("adc", fault & 1 << 0);
+    ImGui::Separator();
 
     quadlet_t i_setp_q;
     Port->ReadQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
@@ -68,16 +96,24 @@ void draw_poke_window() {
     i_setp = current_from_adc_count(i_setp_q);
     ImGui::DragFloat("setp", &i_setp, 0.001, -current_max, current_max, current_format);
     bool setp_edited = ImGui::IsItemEdited();
-    i_setp_q = dac_count_from_current(i_setp);
     // uint32_t zero = 0;
     // uint32_t ffff = 0xffff;
     // ImGui::InputScalar("setp hex",ImGuiDataType_U32 ,&i_setp_q,(uint32_t) 1, "0x%04X");
-    if (setp_edited || ImGui::IsItemEdited()) {
-        Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
+    std::vector<float> current_presets = { -3, -2, -1, -0.1, 0, 0.1, 1, 2, 3};
+    char buf[10];
+    for (auto p : current_presets) {
+        sprintf(buf, "%.1g", p);
+        if (ImGui::Button(buf, ImVec2(40, 0))) {
+            i_setp = p;
+            setp_edited = true;
+        }
+        ImGui::SameLine();
     }
-    if (ImGui::Button("0")) {
-        i_setp = 0;
-        Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, 0x8000);
+    ImGui::Text(" ");
+    i_setp_q = dac_count_from_current(i_setp);
+
+    if (setp_edited) {
+        Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
     }
     ImGui::Separator();
 
@@ -107,9 +143,9 @@ void draw_poke_window() {
         olim = board->ReadDutyCycleLimit(axis - 1);
     }
     if (ImGui::Button("load default")) {
-        kp = 0.01;
-        ki = 0.01;
-        ilim = 1020;
+        kp = 0.001;
+        ki = 0.001;
+        ilim = 200;
         olim = 1020;
         board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
         board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(ki));
@@ -134,6 +170,10 @@ void draw_poke_window() {
     }
 
     ImGui::End();
+}
+
+bool collect_cb(quadlet_t* data, unsigned short num_avail) {
+    return true;
 }
 
 
@@ -248,25 +288,25 @@ int main(int, char**)
             ImGui::BeginTable("boardtable", 5);
             ImGui::TableNextColumn();
             // ImGui::AlignTextToFramePadding();
-            ImGui::LabelText("motor power command", "%s", board->GetPowerEnable() ? "on" : "off");
+            if (ImGui::Button("reboot")) {
+                board->WriteReboot();
+            }
+            bool power_enable = board->GetPowerEnable(); //board->GetPowerStatus();
+            if (ImGui::Checkbox("MV", &power_enable)) {
+                if (ImGui::IsItemEdited()) {
+                    board->SetPowerEnable(power_enable);
+                }
+            }
+            static bool relay_enable = false;
+            if (ImGui::Checkbox("Relay", &relay_enable)) {
+                if (ImGui::IsItemEdited()) {
+                    board->SetSafetyRelay(relay_enable);
+                }
+            }
             ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
-            ImGui::Button("off");
-            ImGui::SameLine();
-            ImGui::Button("on");
             ImGui::TableNextColumn();
-            ImGui::LabelText("relay command", "%s", board->GetSafetyRelay() ? "close" : "open");
-            ImGui::LabelText("relay feedback", "%s", board->GetSafetyRelayStatus() ? "close" : "open");
-            ImGui::LabelText("safety chain", "s", "blah");
-            ImGui::Button("close");
-            ImGui::SameLine();
-            ImGui::Button("open");
             ImGui::TableNextColumn();
-            ImGui::LabelText("espm power command", "%s", board->GetPowerEnable() ? "on" : "off");
-            ImGui::LabelText("espm power good", "%s", "blah");
-            ImGui::Button("off");
-            ImGui::SameLine();
-            ImGui::Button("on");
             // ImGui::SameLine();
             ImGui::EndTable();
 
@@ -280,6 +320,15 @@ int main(int, char**)
             if (ImGui::TreeNodeEx(window_name, ImGuiTreeNodeFlags_DefaultOpen)){
                 ImGui::BeginTable("ax", 4);
                 ImGui::TableNextColumn();
+                bool axis_enable = board->GetAmpEnable(axis_index);
+                // printf("axis %d en %d\n", axis_index, axis_enable);
+                if (ImGui::Checkbox("Enable", &axis_enable)) {
+                    if (ImGui::IsItemEdited()) {
+                        board->SetAmpEnable(axis_index, axis_enable);
+                    }
+                }
+
+                ImGui::TableNextColumn();
 
 
                 motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
@@ -292,19 +341,20 @@ int main(int, char**)
                 // ImGui::Text("0x%04X", motor_current_read[axis_index]);
 
                 ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
-                ImGui::Button("0");
-                ImGui::SameLine();
-                ImGui::Button(".1");
-                ImGui::SameLine();
-                ImGui::Button("1");      
+                auto i_setp_q = dac_count_from_current(i_setp);
+                if (ImGui::IsItemEdited()) {
+                    board->SetMotorCurrent(axis_index, i_setp_q);
+                }
                 ImGui::TableNextColumn();
 
-                static float f0 = 0.001f;
-                static int i0 = 0;
-                ImGui::DragFloat("kp", &f0, 0.0002, 0, 2, "%.4f");
-                ImGui::DragFloat("ki", &f0, 0.0002, 0, 2, "%.4f");
-                ImGui::InputInt("i term lim", &i0, 1, 10);
-                ImGui::InputInt("duty cycle lim", &i0, 1, 10);
+                if (ImGui::Button("Step")) {
+                    board->DataCollectionStart(axis_index + 1);
+                    board->SetMotorCurrent(axis_index, 0x8100);
+                    Port->WriteAllBoards();
+                    Amp1394_Sleep(0.100);
+                    board->SetMotorCurrent(axis_index, 0x8000);
+                    Port->WriteAllBoards();
+                }
 
                 ImGui::EndTable();
                 ImGui::TreePop();
@@ -317,6 +367,7 @@ int main(int, char**)
         ImGui::End();
 
         draw_poke_window();
+        Port->WriteAllBoards();
 
 
         // Rendering
@@ -329,6 +380,7 @@ int main(int, char**)
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
+
     }
 
     // Cleanup
