@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 2.8)
 project(dractweak)
 
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+
 set(IMGUI_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/imgui")
+set(IMPLOT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/implot")
 set(AMP1394_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/mechatronics-software")
 
 
@@ -27,6 +30,8 @@ set_property(TARGET dractweak PROPERTY CXX_STANDARD 20)
 
 
 include_directories("${IMGUI_PATH};${IMGUI_PATH}/backends")
+include_directories("${IMPLOT_PATH}")
+
 target_sources(dractweak 
     PUBLIC 
     # "${CMAKE_CURRENT_SOURCE_DIR}/Amp1394Console.cpp"
@@ -37,6 +42,8 @@ target_sources(dractweak
     "${IMGUI_PATH}/imgui_widgets.cpp"
     "${IMGUI_PATH}/backends/imgui_impl_opengl3.cpp"
     "${IMGUI_PATH}/backends/imgui_impl_glfw.cpp"
+    "${IMPLOT_PATH}/implot.cpp"
+    "${IMPLOT_PATH}/implot_items.cpp"
     )
 target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw gl3w ${CMAKE_DL_LIBS})
 install(TARGETS dractweak DESTINATION bin)

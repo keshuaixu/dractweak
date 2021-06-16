@@ -3,6 +3,8 @@
 #include "imgui_impl_opengl3.h"
 #include <stdio.h>
 
+// #include "implot.h"
+
 #include <GL/gl3w.h>
 #include <GLFW/glfw3.h>
 #include <stdlib.h>
@@ -12,6 +14,13 @@
 #include "PortFactory.h"
 #include "AmpIO.h"
 #include "Amp1394Time.h"
+
+
+#include <thread>
+#include "EthBasePort.h"
+#include <mutex> 
+
+std::mutex mtx; 
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -49,6 +58,15 @@ int float_to_fixed = 4096;
 float kp, ki;
 int ilim, olim;
 
+// bool tuning_mode = false;
+int tuning_pulse_width = 100;
+std::vector<float> current_history;
+int tuning_axis_index;
+
+GLFWwindow* window;
+
+uint16_t render_counter = 0;
+
 void draw_poke_window() {
     ImGui::Begin("No broadcast",0);
     if (ImGui::Button("reboot")) {
@@ -78,8 +96,11 @@ void draw_poke_window() {
     uint32_t fault = board->ReadFault(axis - 1);
     ImGui::LabelText("fault", "%X", fault);
     quadlet_t debug;
+    quadlet_t debug2;
     Port->ReadQuadlet(BoardId, (axis) << 4 | 0x0f | 0x9000, debug);
+    Port->ReadQuadlet(BoardId, (axis) << 4 | 0x0e | 0x9000, debug2);
     ImGui::LabelText("debug", "0x%08X", debug);
+    ImGui::LabelText("debug2", "0x%08X", debug2);
     // printf("0x%08X ", debug);
     ImGui::RadioButton("overheat", fault & 1 << 3);
     ImGui::SameLine();
@@ -168,16 +189,37 @@ void draw_poke_window() {
         if (ImGui::IsItemEdited()) {
         board->WriteDutyCycleLimit(axis - 1, olim);
     }
+    
 
+    // ImGui::Checkbox("tuning mode", &tuning_mode);
+    ImGui::InputInt("tuning pulse width", &tuning_pulse_width, 1, 10);
+    if (ImGui::Button("write")) {
+        Port->WriteQuadlet(BoardId, 0x9000 | (axis) << 4 | 0x0c, tuning_pulse_width);
+    }
     ImGui::End();
 }
 
-bool collect_cb(quadlet_t* data, unsigned short num_avail) {
-    return true;
+bool collect_cb(quadlet_t* data, short num_avail) {
+    for (int i = 0; i < num_avail; i++) {
+        quadlet_t value = data[i];
+        bool type = ((value&0x80000000)>>31);
+        bool timer_overflow = ((value&0x40000000)>>30);
+        int timer = ((value&0x3FFF0000)>>16);
+        int data = (value&0x0000FFFF);
+        if (type == 1) current_history.push_back(current_from_adc_count(data));
+        // printf("sz %d \n", current_history.size());
+        // printf("type %d, ovf %d, timer %d, data %d\n", type, timer_overflow, timer, data);
+    }
+    // if (num_avail != 0) printf("dat col cb %d buffer %d\n", num_avail, current_history.size());
+    if (current_history.size() > tuning_pulse_width +500 && board->IsCollecting()) {
+        board->DataCollectionStop();
+        board->SetMotorCurrent(tuning_axis_index, 0x8000);
+    }
+    return num_avail != 0;
 }
 
 
-int main(int, char**)
+int main(int argc, char** argv)
 {
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
@@ -191,11 +233,11 @@ int main(int, char**)
     //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
 
     // Create window with graphics context
-    GLFWwindow* window = glfwCreateWindow(1440, 720, "dRAC tweak", NULL, NULL);
+    window = glfwCreateWindow(1440, 720, "dRAC tweak", NULL, NULL);
     if (window == NULL)
         return 1;
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(0); // Enable vsync
     bool err = gl3wInit() != 0;
     if (err)
     {
@@ -206,6 +248,7 @@ int main(int, char**)
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    // ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -238,9 +281,13 @@ int main(int, char**)
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
+    current_history.reserve(65536);
+
+
     BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
-    std::vector<AmpIO*> BoardList;
-    std::vector<AmpIO_UInt32> BoardStatusList;
+
+    bool fullvel = false;  // whether to display full velocity feedback
+    bool showTime = false; // whether to display time information
 
     // measure time between reads
     AmpIO_UInt32 maxTime = 0;
@@ -251,25 +298,85 @@ int main(int, char**)
     unsigned int curAxisIndex = 0;
     char axisString[4] = "all";
     std::string portDescription;
-    board = new AmpIO(BoardId);
+
+    for (int i = 1; i < (unsigned int)argc; i++) {
+        if (argv[i][0] == '-') {
+            if (argv[i][1] == 'p') {
+                portDescription = argv[i]+2;
+            }
+            else if (argv[i][1] == 'b') {
+                // -br -- enable broadcast read/write
+                // -bw -- enable broadcast write (sequential read)
+                if (argv[i][2] == 'r')
+                    protocol = BasePort::PROTOCOL_BC_QRW;
+                else if (argv[i][2] == 'w')
+                    protocol = BasePort::PROTOCOL_SEQ_R_BC_W;
+            }
+            else if (argv[i][1] == 'v')
+                fullvel = true;
+            else if (argv[i][1] == 't')
+                showTime = true;
+        }
+        else {
+            int bnum = atoi(argv[i]);
+            if ((bnum >= 0) && (bnum < BoardIO::MAX_BOARDS)) {
+                board = new AmpIO(bnum);
+                std::cerr << "Selecting board " << bnum << std::endl;
+            }
+            else
+                std::cerr << "Invalid board number: " << argv[i] << std::endl;
+        }
+    }
+
     Port = PortFactory(portDescription.c_str(), std::cout);
+    if (!Port) {
+        std::cerr << "Failed to create port using: " << portDescription << std::endl;
+        return -1;
+    }
+    if (!Port->IsOK()) {
+        std::cerr << "Failed to initialize " << Port->GetPortTypeString() << std::endl;
+        return -1;
+    }
+
+    EthBasePort *ethPort = dynamic_cast<EthBasePort *>(Port);
+
     Port->AddBoard(board);
 
     int num_axes = 10;
     int motor_current_read[num_axes];
     float current_setpoint[num_axes] = {0.0};
 
+    board->WriteWatchdogPeriodInSeconds(0);
+
+    // std::thread t1([](){
+    //     while (!glfwWindowShouldClose(window)) {
+    //         mtx.lock();
+    //         Port->ReadAllBoards();
+    //         mtx.unlock();
+    //         // printf("blah\n");
+    //         Amp1394_Sleep(0.000001);
+    //     }
+    // });
+
 
     // Main loop
     while (!glfwWindowShouldClose(window))
     {
+        render_counter++;
+        if (! (render_counter % 2)) {
+            Port->ReadAllBoards();
+            Port->WriteAllBoards();
+        } else {
+        Port->ReadAllBoards();
+
+        // mtx.lock();
         // Poll and handle events (inputs, window resize, etc.)
         // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
         glfwPollEvents();
-        Port->ReadAllBoards();
+        // Amp1394_Sleep(0.1);
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL3_NewFrame();
@@ -306,7 +413,25 @@ int main(int, char**)
             ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
             ImGui::TableNextColumn();
+            // if (ImGui::Button("start")) {
+            //     current_history.clear();
+            //     int result = board->DataCollectionStart(1, collect_cb);
+            //     board->SetMotorCurrent(0, 0x8200);
+            //     // std::cout << "start " << result << std::endl;
+            // // Amp1394_Sleep(0.100);
+            // // board->SetMotorCurrent(axis_index, 0x8000);
+            // // board->DataCollectionStop();
+            // // Port->WriteAllBoards();W
+            // }
+
+            // if (ImGui::Button("dat col stop")) {
+            //     board->DataCollectionStop();
+            // // board->SetMotorCurrent(0, 0x8000);
+            // }
+            ImGui::RadioButton("collecting", board->IsCollecting());
+
             ImGui::TableNextColumn();
+            ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
             ImGui::EndTable();
 
@@ -341,20 +466,33 @@ int main(int, char**)
                 // ImGui::Text("0x%04X", motor_current_read[axis_index]);
 
                 ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
-                auto i_setp_q = dac_count_from_current(i_setp);
+                auto i_setp_q = dac_count_from_current(current_setpoint[axis_index]);
                 if (ImGui::IsItemEdited()) {
                     board->SetMotorCurrent(axis_index, i_setp_q);
+                    // printf("no pulse %d\n", i_setp_q);
                 }
                 ImGui::TableNextColumn();
+                if (ImGui::Button("pulse")) {
+                    current_history.clear();
+                    board->DataCollectionStart(axis_index + 1, collect_cb);
+                    board->SetMotorCurrent(axis_index, i_setp_q);
+                    // for (int i = 0; i < 2000; i++) {
+                    //     Port->ReadAllBoards();
+                    // }
+                    // printf("pulse %d\n", i_setp_q);
 
-                if (ImGui::Button("Step")) {
-                    board->DataCollectionStart(axis_index + 1);
-                    board->SetMotorCurrent(axis_index, 0x8100);
-                    Port->WriteAllBoards();
-                    Amp1394_Sleep(0.100);
-                    board->SetMotorCurrent(axis_index, 0x8000);
-                    Port->WriteAllBoards();
+                    tuning_axis_index = axis_index;
                 }
+
+                // if (ImGui::Button("Step")) {
+                //     board->DataCollectionStart(axis_index + 1, collect_cb);
+                //     // board->SetMotorCurrent(axis_index, 0x8100);
+                //     Port->WriteAllBoards();
+                //     // Amp1394_Sleep(0.100);
+                //     // board->SetMotorCurrent(axis_index, 0x8000);
+                //     // board->DataCollectionStop();
+                //     // Port->WriteAllBoards();
+                // }
 
                 ImGui::EndTable();
                 ImGui::TreePop();
@@ -368,6 +506,7 @@ int main(int, char**)
 
         draw_poke_window();
         Port->WriteAllBoards();
+        // mtx.unlock();
 
 
         // Rendering
@@ -380,12 +519,14 @@ int main(int, char**)
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
+        }
 
     }
 
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    // ImPlot::DestroyContext();
     ImGui::DestroyContext();
 
     glfwDestroyWindow(window);
