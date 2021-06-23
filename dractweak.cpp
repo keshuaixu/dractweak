@@ -3,7 +3,7 @@
 #include "imgui_impl_opengl3.h"
 #include <stdio.h>
 
-// #include "implot.h"
+#include "implot.h"
 
 #include <GL/gl3w.h>
 #include <GLFW/glfw3.h>
@@ -61,6 +61,11 @@ int ilim, olim;
 // bool tuning_mode = false;
 int tuning_pulse_width = 100;
 std::vector<float> current_history;
+// std::vector<float> command_history;
+float command_history[4] = {0};
+float command_history_t[4] = {0};
+
+std::vector<float> current_history_t;
 int tuning_axis_index;
 
 GLFWwindow* window;
@@ -206,7 +211,10 @@ bool collect_cb(quadlet_t* data, short num_avail) {
         bool timer_overflow = ((value&0x40000000)>>30);
         int timer = ((value&0x3FFF0000)>>16);
         int data = (value&0x0000FFFF);
-        if (type == 1) current_history.push_back(current_from_adc_count(data));
+        if (type == 1) {
+            current_history.push_back(current_from_adc_count(data));
+            current_history_t.push_back(1.0f / 80e3 * current_history.size());
+        }
         // printf("sz %d \n", current_history.size());
         // printf("type %d, ovf %d, timer %d, data %d\n", type, timer_overflow, timer, data);
     }
@@ -248,7 +256,7 @@ int main(int argc, char** argv)
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    // ImPlot::CreateContext();
+    ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -282,6 +290,7 @@ int main(int argc, char** argv)
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     current_history.reserve(65536);
+    current_history_t.reserve(65536);
 
 
     BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
@@ -431,7 +440,7 @@ int main(int argc, char** argv)
             ImGui::RadioButton("collecting", board->IsCollecting());
 
             ImGui::TableNextColumn();
-            ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
+            // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
             ImGui::EndTable();
 
@@ -474,6 +483,7 @@ int main(int argc, char** argv)
                 ImGui::TableNextColumn();
                 if (ImGui::Button("pulse")) {
                     current_history.clear();
+                    current_history_t.clear();
                     board->DataCollectionStart(axis_index + 1, collect_cb);
                     board->SetMotorCurrent(axis_index, i_setp_q);
                     // for (int i = 0; i < 2000; i++) {
@@ -503,11 +513,20 @@ int main(int argc, char** argv)
         }
 
         ImGui::End();
+        Port->WriteAllBoards();
 
         draw_poke_window();
-        Port->WriteAllBoards();
         // mtx.unlock();
-
+        ImGui::Begin("Tuning");
+        static ImPlotFlags flags = ImPlotFlags_NoLegend;
+        static ImPlotAxisFlags xflags = ImPlotAxisFlags_AutoFit|ImPlotAxisFlags_NoGridLines;
+        static ImPlotAxisFlags yflags = ImPlotAxisFlags_AutoFit|ImPlotAxisFlags_NoGridLines;
+        if (ImPlot::BeginPlot("##Tuning","t","I",ImVec2(-1,-1),flags,xflags,yflags)) {
+            ImPlot::PlotLine("I measured", current_history_t.data(), current_history.data(), tuning_pulse_width + 200);
+            // ImPlot::PlotLine("My Line Plot", x_data, y_data, 1000);
+            ImPlot::EndPlot();
+        }
+        ImGui::End();
 
         // Rendering
         ImGui::Render();
@@ -526,7 +545,7 @@ int main(int argc, char** argv)
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
-    // ImPlot::DestroyContext();
+    ImPlot::DestroyContext();
     ImGui::DestroyContext();
 
     glfwDestroyWindow(window);
