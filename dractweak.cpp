@@ -45,6 +45,8 @@ uint16_t pi_fixed_from_float(float val) {
 const char* current_format = "% .03f A";
 const float current_max = 4.5; 
 
+uint16_t debug_write_count = 0;
+
 AmpIO *board;
 BasePort *Port;
 int BoardId = 0;
@@ -144,9 +146,9 @@ void draw_poke_window() {
     ImGui::Separator();
 
     int mode_read = board->ReadMotorControlMode(axis - 1);
-    if (ImGui::RadioButton("reset", mode_read == AmpIO::MotorControlMode::RESET)) {
+    if (ImGui::RadioButton("current", mode_read == AmpIO::MotorControlMode::CURRENT)) {
         if (ImGui::IsItemEdited()) {
-            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::RESET);
+            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::CURRENT);
         }
     }
     ImGui::SameLine();
@@ -156,13 +158,13 @@ void draw_poke_window() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::RadioButton("current", mode_read == AmpIO::MotorControlMode::CURRENT)) {
+    if (ImGui::RadioButton("reset", mode_read == AmpIO::MotorControlMode::RESET)) {
         if (ImGui::IsItemEdited()) {
-            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::CURRENT);
+            board->WriteMotorControlMode(axis - 1, AmpIO::MotorControlMode::RESET);
         }
     }
 
-    if (true || ImGui::Button("read")) {
+    if (true) {
         kp = (float) board->ReadCurrentKpRaw(axis - 1) / float_to_fixed;
         ki = (float) board->ReadCurrentKiRaw(axis - 1) / float_to_fixed;
         ilim = board->ReadCurrentITermLimitRaw(axis - 1);
@@ -355,7 +357,7 @@ int main(int argc, char** argv)
     int motor_current_read[num_axes];
     float current_setpoint[num_axes] = {0.0};
 
-    board->WriteWatchdogPeriodInSeconds(0);
+    board->WriteWatchdogPeriodInSeconds(1);
 
     // std::thread t1([](){
     //     while (!glfwWindowShouldClose(window)) {
@@ -413,13 +415,14 @@ int main(int argc, char** argv)
                     board->SetPowerEnable(power_enable);
                 }
             }
-            static bool relay_enable = false;
+            bool relay_enable = board->GetSafetyRelayStatus();
             if (ImGui::Checkbox("Relay", &relay_enable)) {
                 if (ImGui::IsItemEdited()) {
                     board->SetSafetyRelay(relay_enable);
                 }
             }
-            ImGui::LabelText("48V voltage", "%.2f", 0);
+
+            // ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
             ImGui::TableNextColumn();
             // if (ImGui::Button("start")) {
@@ -438,7 +441,18 @@ int main(int argc, char** argv)
             // // board->SetMotorCurrent(0, 0x8000);
             // }
             ImGui::RadioButton("collecting", board->IsCollecting());
+            ImGui::RadioButton("watchdog timeout", board->GetWatchdogTimeoutStatus());
 
+            ImGui::TableNextColumn();
+            if (ImGui::Button("default pi")) {
+                for (int axis = 1; axis < 11; axis ++) {
+                    board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(0.02));
+                    board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(0.001));
+                    board->WriteCurrentITermLimitRaw(axis - 1, 200);
+                    board->WriteDutyCycleLimit(axis - 1, 1020);
+                }
+            }
+            ImGui::InputInt("RtLen", &board->rtlen_debug, 1, 1);
             ImGui::TableNextColumn();
             // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
@@ -541,6 +555,7 @@ int main(int argc, char** argv)
         }
 
     }
+    board->WritePowerEnable(false);
 
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
