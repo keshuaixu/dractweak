@@ -43,6 +43,7 @@ uint16_t pi_fixed_from_float(float val) {
 }
 
 const char* current_format = "% .03f A";
+const char* voltage_format = "% .03f V";
 const float current_max = 4.5; 
 
 uint16_t debug_write_count = 0;
@@ -355,7 +356,9 @@ int main(int argc, char** argv)
 
     int num_axes = 10;
     int motor_current_read[num_axes];
+    float motor_voltage_read[num_axes];
     float current_setpoint[num_axes] = {0.0};
+    float voltage_setpoint[num_axes] = {0.0};
 
     board->WriteWatchdogPeriodInSeconds(1);
 
@@ -368,6 +371,9 @@ int main(int argc, char** argv)
     //         Amp1394_Sleep(0.000001);
     //     }
     // });
+    int adc_phase = 0;
+    bool espmv = 1;
+
 
 
     // Main loop
@@ -421,6 +427,11 @@ int main(int argc, char** argv)
                     board->SetSafetyRelay(relay_enable);
                 }
             }
+            if (ImGui::Checkbox("ESPMV", &espmv)) {
+                if (ImGui::IsItemEdited()) {
+                    Port->WriteQuadlet(BoardId, 0x9003, espmv);
+                }
+            }
 
             // ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
@@ -442,17 +453,30 @@ int main(int argc, char** argv)
             // }
             ImGui::RadioButton("collecting", board->IsCollecting());
             ImGui::RadioButton("watchdog timeout", board->GetWatchdogTimeoutStatus());
+            ImGui::RadioButton("mv good", board->GetPowerStatus());
+
+            uint32_t digin = board->GetDigitalInput();
+            char name[32];
+            for (int i = 0; i < 32; i++) {
+                sprintf(name, "##digin%d", i);
+                ImGui::RadioButton(name, (digin >> i) & 1);
+                if (i % 8 != 7) ImGui::SameLine();
+            }
 
             ImGui::TableNextColumn();
             if (ImGui::Button("default pi")) {
                 for (int axis = 1; axis < 11; axis ++) {
-                    board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(0.02));
-                    board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(0.001));
+                    board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(0.05));
+                    board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(0.01));
                     board->WriteCurrentITermLimitRaw(axis - 1, 200);
                     board->WriteDutyCycleLimit(axis - 1, 1020);
                 }
             }
             ImGui::InputInt("RtLen", &board->rtlen_debug, 1, 1);
+            ImGui::DragInt("adc phase", &adc_phase, 1.0f, 0, 2047);
+            if (ImGui::IsItemEdited()) {
+                Port->WriteQuadlet(BoardId, 0x9002, adc_phase);
+            }
             ImGui::TableNextColumn();
             // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
@@ -466,7 +490,7 @@ int main(int argc, char** argv)
             sprintf(window_name, "Axis %d", axis_index + 1);
             // ImGui::BeginChild(window_name, ImVec2(200, 0), true, ImGuiWindowFlags_None);
             if (ImGui::TreeNodeEx(window_name, ImGuiTreeNodeFlags_DefaultOpen)){
-                ImGui::BeginTable("ax", 4);
+                ImGui::BeginTable("ax", 2);
                 ImGui::TableNextColumn();
                 bool axis_enable = board->GetAmpEnable(axis_index);
                 // printf("axis %d en %d\n", axis_index, axis_enable);
@@ -475,38 +499,45 @@ int main(int argc, char** argv)
                         board->SetAmpEnable(axis_index, axis_enable);
                     }
                 }
+                ImGui::LabelText("encoder pos", "0x%08X", board->GetEncoderPosition(axis_index));
+                ImGui::ProgressBar((board->GetEncoderPosition(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
+                ImGui::LabelText("pot", "0x%04X", board->GetAnalogInput(axis_index));
+                ImGui::ProgressBar((board->GetAnalogInput(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
+                ImGui::LabelText("fault", "0x%04X", board->GetAmpFaultCode(axis_index));
+
+                if (ImGui::Button("pulse")) {
+                    current_history.clear();
+                    current_history_t.clear();
+                    board->DataCollectionStart(axis_index + 1, collect_cb);
+                    board->SetMotorCurrent(axis_index, dac_count_from_current(current_setpoint[axis_index]));
+                    tuning_axis_index = axis_index;
+                }
 
                 ImGui::TableNextColumn();
 
 
                 motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
-                // ImGui::DragInt("Im", &(motor_current_read[axis_index]),0.1f, 0, 0xffff,"0x%04X");
-                // ImGui::BulletText("Im");
                 ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
                 float im = current_from_adc_count(motor_current_read[axis_index]);
                 ImGui::LabelText("I", current_format, im);
-                // ImGui::ProgressBar(std::abs(im)/Imax,ImVec2(0.0f, 0.0f),"");
-                // ImGui::Text("0x%04X", motor_current_read[axis_index]);
-
+                ImGui::ProgressBar(std::abs(im)/Imax,ImVec2(0.0f, 0.0f),"");
                 ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
                 auto i_setp_q = dac_count_from_current(current_setpoint[axis_index]);
                 if (ImGui::IsItemEdited()) {
                     board->SetMotorCurrent(axis_index, i_setp_q);
-                    // printf("no pulse %d\n", i_setp_q);
                 }
-                ImGui::TableNextColumn();
-                if (ImGui::Button("pulse")) {
-                    current_history.clear();
-                    current_history_t.clear();
-                    board->DataCollectionStart(axis_index + 1, collect_cb);
-                    board->SetMotorCurrent(axis_index, i_setp_q);
-                    // for (int i = 0; i < 2000; i++) {
-                    //     Port->ReadAllBoards();
-                    // }
-                    // printf("pulse %d\n", i_setp_q);
 
-                    tuning_axis_index = axis_index;
+                motor_voltage_read[axis_index] = board->GetMotorVoltageRatio(axis_index);
+                float vm = motor_voltage_read[axis_index] * 48.0f;
+                ImGui::LabelText("V", voltage_format, vm);
+                ImGui::ProgressBar(std::abs(vm)/48.0f,ImVec2(0.0f, 0.0f),"");
+
+                ImGui::DragFloat("V setp", &(voltage_setpoint[axis_index]), 0.01, -48, 48);
+                if (ImGui::IsItemEdited()) {
+                    board->SetMotorVoltageRatio(axis_index, voltage_setpoint[axis_index]/48.0f);
                 }
+
+
 
                 // if (ImGui::Button("Step")) {
                 //     board->DataCollectionStart(axis_index + 1, collect_cb);
