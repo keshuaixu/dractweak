@@ -515,15 +515,35 @@ int main(int argc, char** argv)
 
                 ImGui::TableNextColumn();
 
-
+                bool need_to_set_current = 0;
                 motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
                 ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
                 float im = current_from_adc_count(motor_current_read[axis_index]);
                 ImGui::LabelText("I", current_format, im);
                 ImGui::ProgressBar(std::abs(im)/Imax,ImVec2(0.0f, 0.0f),"");
                 ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
+                need_to_set_current |= ImGui::IsItemEdited();
+                if (ImGui::Button("0")) {
+                    current_setpoint[axis_index] = 0;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("0.05")) {
+                    current_setpoint[axis_index] = 0.05;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();           
+                if (ImGui::Button("0.5")) {
+                    current_setpoint[axis_index] = 0.5;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();          
+                if (ImGui::Button("-0.5")) {
+                    current_setpoint[axis_index] = -0.5;
+                    need_to_set_current |= 1;
+                }
                 auto i_setp_q = dac_count_from_current(current_setpoint[axis_index]);
-                if (ImGui::IsItemEdited()) {
+                if (need_to_set_current) {
                     board->SetMotorCurrent(axis_index, i_setp_q);
                 }
 
