@@ -25,6 +25,9 @@ include_directories(${OPENGL_INCLUDE_DIRS})
 add_library("gl3w" "${IMGUI_PATH}/examples/libs/gl3w/GL/gl3w.c")
 include_directories("${IMGUI_PATH}/examples/libs/gl3w")
 
+find_package(GLEW REQUIRED)
+include_directories(${GLEW_INCLUDE_DIRS})
+
 add_executable(dractweak dractweak.cpp)
 set_property(TARGET dractweak PROPERTY CXX_STANDARD 20)
 
@@ -45,5 +48,5 @@ target_sources(dractweak
     "${IMPLOT_PATH}/implot.cpp"
     "${IMPLOT_PATH}/implot_items.cpp"
     )
-target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw gl3w ${CMAKE_DL_LIBS})
+target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw gl3w GLEW::GLEW ${CMAKE_DL_LIBS})
 install(TARGETS dractweak DESTINATION bin)
