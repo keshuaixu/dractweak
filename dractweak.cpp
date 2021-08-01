@@ -59,20 +59,26 @@ static void glfw_error_callback(int error, const char* description)
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
-float current_from_adc_count(int count) {
-    return (count - 0x8000) / 4000.0;
+float current_from_adc_count(int count, int index) {
+    float scale = index < 2 ? 4000.0 : 16000.0;
+    return (count - 0x8000) / scale;
 }
 
 
-int dac_count_from_current(float current) {
-    int result = int(current * 4000) + 0x8000;
+int dac_count_from_current(float current, int index) {
+    float scale = index < 2 ? 4000.0 : 16000.0;
+    int result = int(current * scale) + 0x8000;
     return std::clamp(result, 0, 0xffff);
 }
 
-uint16_t pi_fixed_from_float(float val) {
-    int result = int(val * 4096);
-    return std::clamp(result, 0, 0xffff);
+float Imax(int index) {
+    return current_from_adc_count(0xffff, index);
 }
+
+// uint16_t pi_fixed_from_float(float val) {
+//     int result = int(val * 4096);
+//     return std::clamp(result, 0, 0xffff);
+// }
 
 const char* current_format = "% .03f A";
 const char* voltage_format = "% .03f V";
@@ -83,14 +89,13 @@ uint16_t debug_write_count = 0;
 AmpIO *board;
 BasePort *Port;
 int BoardId = 0;
-float Imax = current_from_adc_count(0xffff);
+
 
 int axis = 1;
 float i_setp;
 int mode;
 
-int float_to_fixed = 4096;
-float kp, ki;
+int kp, ki;
 int ilim, olim;
 
 // bool tuning_mode = false;
@@ -129,7 +134,7 @@ void draw_poke_window() {
     Port->ReadQuadlet(BoardId, (axis) << 4 | 0x00, current_q);
     uint16_t current = static_cast<uint16_t>(current_q & 0xffff);
     ImGui::LabelText("I meas hex", "0x%04X", current);
-    float im = current_from_adc_count(current);
+    float im = current_from_adc_count(current, axis - 1);
     ImGui::LabelText("I meas", current_format, im);
     ImGui::Separator();
     ImGui::LabelText("duty cycle", "%d", board->ReadDutyCycle(axis - 1));
@@ -154,7 +159,7 @@ void draw_poke_window() {
     quadlet_t i_setp_q;
     Port->ReadQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
     ImGui::LabelText("setp hex", "0x%04X", i_setp_q);
-    i_setp = current_from_adc_count(i_setp_q);
+    i_setp = current_from_adc_count(i_setp_q, axis - 1);
     ImGui::DragFloat("setp", &i_setp, 0.001, -current_max, current_max, current_format);
     bool setp_edited = ImGui::IsItemEdited();
     // uint32_t zero = 0;
@@ -171,7 +176,7 @@ void draw_poke_window() {
         ImGui::SameLine();
     }
     ImGui::Text(" ");
-    i_setp_q = dac_count_from_current(i_setp);
+    i_setp_q = dac_count_from_current(i_setp, axis - 1);
 
     if (setp_edited) {
         Port->WriteQuadlet(BoardId, (axis) << 4 | 0x01, i_setp_q);
@@ -198,28 +203,29 @@ void draw_poke_window() {
     }
 
     if (true) {
-        kp = (float) board->ReadCurrentKpRaw(axis - 1) / float_to_fixed;
-        ki = (float) board->ReadCurrentKiRaw(axis - 1) / float_to_fixed;
+        uint32_t stuff = board->ReadCurrentKpRaw(axis - 1);
+        kp = board->ReadCurrentKpRaw(axis - 1);
+        ki = board->ReadCurrentKiRaw(axis - 1);
         ilim = board->ReadCurrentITermLimitRaw(axis - 1);
         olim = board->ReadDutyCycleLimit(axis - 1);
     }
     if (ImGui::Button("load default")) {
-        kp = 0.001;
-        ki = 0.001;
+        kp = 1;
+        ki = 1;
         ilim = 200;
         olim = 1020;
-        board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
-        board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(ki));
+        board->WriteCurrentKpRaw(axis - 1, kp);
+        board->WriteCurrentKiRaw(axis - 1, ki);
         board->WriteCurrentITermLimitRaw(axis - 1, ilim);
         board->WriteDutyCycleLimit(axis - 1, olim);
     }
-    ImGui::DragFloat("kp", &kp, 0.0002, 0, 2, "%.4f");
+    ImGui::DragInt("kp", &kp, 1, 0, 0x3ffff);
     if (ImGui::IsItemEdited()) {
-        board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(kp));
+        board->WriteCurrentKpRaw(axis - 1, kp);
     }
-    ImGui::DragFloat("ki", &ki, 0.0002, 0, 2, "%.4f");
+    ImGui::DragInt("ki", &ki, 1, 0, 0x3ffff);
     if (ImGui::IsItemEdited()) {
-        board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(ki));
+        board->WriteCurrentKiRaw(axis - 1, ki);
     }
     ImGui::InputInt("i term lim", &ilim, 1, 10);
     if (ImGui::IsItemEdited()) {
@@ -247,7 +253,7 @@ bool collect_cb(quadlet_t* data, short num_avail) {
         int timer = ((value&0x3FFF0000)>>16);
         int data = (value&0x0000FFFF);
         if (type == 1) {
-            current_history.push_back(current_from_adc_count(data));
+            current_history.push_back(current_from_adc_count(data, tuning_axis_index));
             current_history_t.push_back(1.0f / 80e3 * current_history.size());
         }
         // printf("sz %d \n", current_history.size());
@@ -497,8 +503,8 @@ int main(int argc, char** argv)
             ImGui::TableNextColumn();
             if (ImGui::Button("default pi")) {
                 for (int axis = 1; axis < 11; axis ++) {
-                    board->WriteCurrentKpRaw(axis - 1, pi_fixed_from_float(0.05));
-                    board->WriteCurrentKiRaw(axis - 1, pi_fixed_from_float(0.01));
+                    board->WriteCurrentKpRaw(axis - 1, 0);
+                    board->WriteCurrentKiRaw(axis - 1, 10);
                     board->WriteCurrentITermLimitRaw(axis - 1, 200);
                     board->WriteDutyCycleLimit(axis - 1, 1020);
                 }
@@ -535,23 +541,45 @@ int main(int argc, char** argv)
                 ImGui::LabelText("pot", "0x%04X", board->GetAnalogInput(axis_index));
                 ImGui::ProgressBar((board->GetAnalogInput(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
                 ImGui::LabelText("fault", "0x%04X", board->GetAmpFaultCode(axis_index));
-
-                if (ImGui::Button("pulse")) {
+                if (ImGui::Button("pulse 0.1A")) {
                     current_history.clear();
                     current_history_t.clear();
                     board->DataCollectionStart(axis_index + 1, collect_cb);
-                    board->SetMotorCurrent(axis_index, dac_count_from_current(current_setpoint[axis_index]));
+                    board->SetMotorCurrent(axis_index, dac_count_from_current(0.1, axis_index));
                     tuning_axis_index = axis_index;
                 }
-
+                ImGui::SameLine();
+                if (ImGui::Button("0.5A")) {
+                    current_history.clear();
+                    current_history_t.clear();
+                    board->DataCollectionStart(axis_index + 1, collect_cb);
+                    board->SetMotorCurrent(axis_index, dac_count_from_current(0.5, axis_index));
+                    tuning_axis_index = axis_index;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("2A")) {
+                    current_history.clear();
+                    current_history_t.clear();
+                    board->DataCollectionStart(axis_index + 1, collect_cb);
+                    board->SetMotorCurrent(axis_index, dac_count_from_current(2.0, axis_index));
+                    tuning_axis_index = axis_index;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("setp")) {
+                    current_history.clear();
+                    current_history_t.clear();
+                    board->DataCollectionStart(axis_index + 1, collect_cb);
+                    board->SetMotorCurrent(axis_index, dac_count_from_current(current_setpoint[axis_index], axis_index));
+                    tuning_axis_index = axis_index;
+                }                
                 ImGui::TableNextColumn();
 
                 bool need_to_set_current = 0;
                 motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
                 ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
-                float im = current_from_adc_count(motor_current_read[axis_index]);
+                float im = current_from_adc_count(motor_current_read[axis_index], axis_index);
                 ImGui::LabelText("I", current_format, im);
-                ImGui::ProgressBar(std::abs(im)/Imax,ImVec2(0.0f, 0.0f),"");
+                ImGui::ProgressBar(std::abs(im)/Imax(axis_index),ImVec2(0.0f, 0.0f),"");
                 ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
                 need_to_set_current |= ImGui::IsItemEdited();
                 if (ImGui::Button("0")) {
@@ -573,7 +601,7 @@ int main(int argc, char** argv)
                     current_setpoint[axis_index] = -0.5;
                     need_to_set_current |= 1;
                 }
-                auto i_setp_q = dac_count_from_current(current_setpoint[axis_index]);
+                auto i_setp_q = dac_count_from_current(current_setpoint[axis_index], axis_index);
                 if (need_to_set_current) {
                     board->SetMotorCurrent(axis_index, i_setp_q);
                 }
