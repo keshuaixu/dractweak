@@ -9,6 +9,7 @@
 
 #include <stdlib.h>
 #include <vector>
+#include <deque>
 
 #include <Amp1394/AmpIORevision.h>
 #include "PortFactory.h"
@@ -107,6 +108,10 @@ float command_history_t[4] = {0};
 
 std::vector<float> current_history_t;
 int tuning_axis_index;
+
+float plot_y[1000];
+int plot_y_index = 0;
+
 
 GLFWwindow* window;
 
@@ -330,7 +335,7 @@ int main(int argc, char** argv)
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     current_history.reserve(65536);
-    current_history_t.reserve(65536);
+    current_history_t.reserve(65536);    
 
 
     BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
@@ -514,6 +519,16 @@ int main(int argc, char** argv)
             if (ImGui::IsItemEdited()) {
                 Port->WriteQuadlet(BoardId, 0x9002, adc_phase);
             }
+            quadlet_t crc_good_count;
+            quadlet_t crc_err_count;
+            quadlet_t dvrk_rx_cfsm;
+            Port->ReadQuadlet(BoardId, 0x1C, crc_err_count);
+            Port->ReadQuadlet(BoardId, 0x1D, crc_good_count);
+            Port->ReadQuadlet(BoardId, 0x1E, dvrk_rx_cfsm);
+            ImGui::LabelText("crc good", "%d", crc_good_count);
+            ImGui::LabelText("crc err", "%d", crc_err_count);
+            ImGui::LabelText("dvrk_rx_cfsm", "%d", dvrk_rx_cfsm);
+
             ImGui::TableNextColumn();
             // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
@@ -537,10 +552,16 @@ int main(int argc, char** argv)
                     }
                 }
                 ImGui::LabelText("encoder pos", "0x%08X", board->GetEncoderPosition(axis_index));
-                ImGui::ProgressBar((board->GetEncoderPosition(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
+                ImGui::ProgressBar((board->GetEncoderPosition(axis_index) & 32767) / 32767.0f,ImVec2(0.0f, 0.0f),"");
                 ImGui::LabelText("pot", "0x%04X", board->GetAnalogInput(axis_index));
                 ImGui::ProgressBar((board->GetAnalogInput(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
                 ImGui::LabelText("fault", "0x%04X", board->GetAmpFaultCode(axis_index));
+
+                if (axis_index == axis - 1) {
+                    if (++ plot_y_index == 1000) plot_y_index = 0;
+                    plot_y[plot_y_index] = (float) (board->GetEncoderPosition(axis_index));
+                }
+
                 if (ImGui::Button("pulse 0.1A")) {
                     current_history.clear();
                     current_history_t.clear();
@@ -647,6 +668,16 @@ int main(int argc, char** argv)
         static ImPlotAxisFlags yflags = ImPlotAxisFlags_AutoFit|ImPlotAxisFlags_NoGridLines;
         if (ImPlot::BeginPlot("##Tuning","t","I",ImVec2(-1,-1),flags,xflags,yflags)) {
             ImPlot::PlotLine("I measured", current_history_t.data(), current_history.data(), tuning_pulse_width + 200);
+            // ImPlot::PlotLine("My Line Plot", x_data, y_data, 1000);
+            ImPlot::EndPlot();
+        }
+        ImGui::End();
+        static ImPlotFlags flags2 = ImPlotFlags_NoLegend;
+        static ImPlotAxisFlags xflags2 = ImPlotAxisFlags_AutoFit;
+        static ImPlotAxisFlags yflags2 = ImPlotAxisFlags_AutoFit;        
+        ImGui::Begin("Plot");
+        if (ImPlot::BeginPlot("##Plot","t","count",ImVec2(-1,-1),flags,xflags,yflags)) {
+            ImPlot::PlotLine("data", plot_y, 1000);
             // ImPlot::PlotLine("My Line Plot", x_data, y_data, 1000);
             ImPlot::EndPlot();
         }
