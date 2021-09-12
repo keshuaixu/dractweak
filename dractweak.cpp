@@ -478,6 +478,21 @@ int main(int argc, char** argv)
             // ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
             ImGui::TableNextColumn();
+            if (ImGui::Button("skip crc")) {
+                Port->WriteQuadlet(BoardId, 0x9005, 1);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("unskip")) {
+                Port->WriteQuadlet(BoardId, 0x9005, 0);
+            }      
+            if (ImGui::Button("test pattern on")) {
+                Port->WriteQuadlet(BoardId, 0x9004, 1);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("off")) {
+                Port->WriteQuadlet(BoardId, 0x9004, 0);
+            }                    
+            ImGui::TableNextColumn();
             // if (ImGui::Button("start")) {
             //     current_history.clear();
             //     int result = board->DataCollectionStart(1, collect_cb);
@@ -556,6 +571,14 @@ int main(int argc, char** argv)
                 ImGui::LabelText("pot", "0x%04X", board->GetAnalogInput(axis_index));
                 ImGui::ProgressBar((board->GetAnalogInput(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
                 ImGui::LabelText("fault", "0x%04X", board->GetAmpFaultCode(axis_index));
+                ImGui::LabelText("vel", "0x%08X", board->GetEncoderVelocityRaw(axis_index));
+                ImGui::LabelText("qtr1", "0x%08X", board->GetEncoderQtr1Raw(axis_index));
+                ImGui::LabelText("qtr5", "0x%08X", board->GetEncoderQtr5Raw(axis_index));
+                ImGui::LabelText("run", "0x%08X", board->GetEncoderRunningCounterRaw(axis_index));
+                ImGui::LabelText("vel predicted", "%f", board->GetEncoderVelocityPredicted(axis_index, 0));
+                ImGui::LabelText("vel", "%f", board->GetEncoderVelocity(axis_index));
+                ImGui::LabelText("acc", "%f", board->GetEncoderAcceleration(axis_index, 0));
+
 
                 if (axis_index == axis - 1) {
                     if (++ plot_y_index == 1000) plot_y_index = 0;
