@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <vector>
 #include <deque>
+#include <algorithm>
 
 #include <Amp1394/AmpIORevision.h>
 #include "PortFactory.h"
