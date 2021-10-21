@@ -451,7 +451,7 @@ int main(int argc, char** argv)
         // ImGui::Begin("dRAC",0 , ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
         ImGui::Begin("dRAC",0);
         if (ImGui::TreeNodeEx("board", ImGuiTreeNodeFlags_DefaultOpen)){
-            ImGui::BeginTable("boardtable", 5);
+            ImGui::BeginTable("boardtable", 3);
             ImGui::TableNextColumn();
             // ImGui::AlignTextToFramePadding();
             if (ImGui::Button("reboot")) {
@@ -477,21 +477,15 @@ int main(int argc, char** argv)
 
             // ImGui::LabelText("48V voltage", "%.2f", 0);
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
-            ImGui::TableNextColumn();
-            if (ImGui::Button("skip crc")) {
-                Port->WriteQuadlet(BoardId, 0x9005, 1);
+            // ImGui::TableNextColumn();
+            if (ImGui::Button("bypass safety")) {
+                Port->WriteQuadlet(BoardId, 0xB100, 1);
             }
             ImGui::SameLine();
-            if (ImGui::Button("unskip")) {
-                Port->WriteQuadlet(BoardId, 0x9005, 0);
+            if (ImGui::Button("unbypass")) {
+                Port->WriteQuadlet(BoardId, 0xB100, 0);
             }      
-            if (ImGui::Button("test pattern on")) {
-                Port->WriteQuadlet(BoardId, 0x9004, 1);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("off")) {
-                Port->WriteQuadlet(BoardId, 0x9004, 0);
-            }                    
+             
             ImGui::TableNextColumn();
             // if (ImGui::Button("start")) {
             //     current_history.clear();
@@ -529,22 +523,34 @@ int main(int argc, char** argv)
                     board->WriteDutyCycleLimit(axis - 1, 1020);
                 }
             }
-            ImGui::InputInt("RtLen", &board->rtlen_debug, 1, 1);
+            // ImGui::InputInt("RtLen", &board->rtlen_debug, 1, 1);
             ImGui::DragInt("adc phase", &adc_phase, 1.0f, 0, 2047);
             if (ImGui::IsItemEdited()) {
                 Port->WriteQuadlet(BoardId, 0x9002, adc_phase);
             }
             quadlet_t crc_good_count;
             quadlet_t crc_err_count;
-            quadlet_t dvrk_rx_cfsm;
-            Port->ReadQuadlet(BoardId, 0x1C, crc_err_count);
-            Port->ReadQuadlet(BoardId, 0x1D, crc_good_count);
-            Port->ReadQuadlet(BoardId, 0x1E, dvrk_rx_cfsm);
+            quadlet_t mv;
+            quadlet_t esii_status;
+            quadlet_t espm_adc;
+            quadlet_t instrument_id;
+            quadlet_t dev_build_number;
+            Port->ReadQuadlet(BoardId, 0xb000, crc_err_count);
+            Port->ReadQuadlet(BoardId, 0xb001, crc_good_count);
+            Port->ReadQuadlet(BoardId, 0xb002, mv);
+            Port->ReadQuadlet(BoardId, 0xb010, esii_status);
+            Port->ReadQuadlet(BoardId, 0xb011, espm_adc);
+            Port->ReadQuadlet(BoardId, 0xb012, instrument_id);
+            Port->ReadQuadlet(BoardId, 0xbfff, dev_build_number);
             ImGui::LabelText("crc good", "%d", crc_good_count);
             ImGui::LabelText("crc err", "%d", crc_err_count);
-            ImGui::LabelText("dvrk_rx_cfsm", "%d", dvrk_rx_cfsm);
+            ImGui::LabelText("mv", "%.2f V", mv * 1.31255e-3);
+            ImGui::LabelText("esii status", "0x%08X", esii_status);
+            ImGui::LabelText("espm adc", "0x%08X", espm_adc);
+            ImGui::LabelText("instrument", "0x%08X", instrument_id);
+            ImGui::LabelText("build", "0x%08X", dev_build_number);
 
-            ImGui::TableNextColumn();
+            // ImGui::TableNextColumn();
             // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));
             // ImGui::SameLine();
             ImGui::EndTable();
@@ -557,7 +563,7 @@ int main(int argc, char** argv)
             sprintf(window_name, "Axis %d", axis_index + 1);
             // ImGui::BeginChild(window_name, ImVec2(200, 0), true, ImGuiWindowFlags_None);
             if (ImGui::TreeNodeEx(window_name, ImGuiTreeNodeFlags_DefaultOpen)){
-                ImGui::BeginTable("ax", 2);
+                ImGui::BeginTable("ax", 3);
                 ImGui::TableNextColumn();
                 bool axis_enable = board->GetAmpEnable(axis_index);
                 // printf("axis %d en %d\n", axis_index, axis_enable);
@@ -571,6 +577,8 @@ int main(int argc, char** argv)
                 ImGui::LabelText("pot", "0x%04X", board->GetAnalogInput(axis_index));
                 ImGui::ProgressBar((board->GetAnalogInput(axis_index) & 4095) / 4095.0f,ImVec2(0.0f, 0.0f),"");
                 ImGui::LabelText("fault", "0x%04X", board->GetAmpFaultCode(axis_index));
+                ImGui::TableNextColumn();
+
                 ImGui::LabelText("vel", "0x%08X", board->GetEncoderVelocityRaw(axis_index));
                 ImGui::LabelText("qtr1", "0x%08X", board->GetEncoderQtr1Raw(axis_index));
                 ImGui::LabelText("qtr5", "0x%08X", board->GetEncoderQtr5Raw(axis_index));
@@ -578,11 +586,48 @@ int main(int argc, char** argv)
                 ImGui::LabelText("vel predicted", "%f", board->GetEncoderVelocityPredicted(axis_index, 0));
                 ImGui::LabelText("vel", "%f", board->GetEncoderVelocity(axis_index));
                 ImGui::LabelText("acc", "%f", board->GetEncoderAcceleration(axis_index, 0));
+                ImGui::TableNextColumn();
 
 
                 if (axis_index == axis - 1) {
                     if (++ plot_y_index == 1000) plot_y_index = 0;
                     plot_y[plot_y_index] = (float) (board->GetEncoderPosition(axis_index));
+                }
+
+         
+
+
+                bool need_to_set_current = 0;
+                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
+                ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
+                float im = current_from_adc_count(motor_current_read[axis_index], axis_index);
+                ImGui::LabelText("I", current_format, im);
+                ImGui::ProgressBar(std::abs(im)/Imax(axis_index),ImVec2(0.0f, 0.0f),"");
+                ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
+                need_to_set_current |= ImGui::IsItemEdited();
+                if (ImGui::Button("0")) {
+                    current_setpoint[axis_index] = 0;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("0.05")) {
+                    current_setpoint[axis_index] = 0.05;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();           
+                if (ImGui::Button("0.5")) {
+                    current_setpoint[axis_index] = 0.5;
+                    need_to_set_current |= 1;
+                }
+                ImGui::SameLine();          
+                if (ImGui::Button("-0.5")) {
+                    current_setpoint[axis_index] = -0.5;
+                    need_to_set_current |= 1;
+                }
+
+                auto i_setp_q = dac_count_from_current(current_setpoint[axis_index], axis_index);
+                if (need_to_set_current) {
+                    board->SetMotorCurrent(axis_index, i_setp_q);
                 }
 
                 if (ImGui::Button("pulse 0.1A")) {
@@ -615,40 +660,7 @@ int main(int argc, char** argv)
                     board->DataCollectionStart(axis_index + 1, collect_cb);
                     board->SetMotorCurrent(axis_index, dac_count_from_current(current_setpoint[axis_index], axis_index));
                     tuning_axis_index = axis_index;
-                }                
-                ImGui::TableNextColumn();
-
-                bool need_to_set_current = 0;
-                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
-                ImGui::LabelText("adc", "0x%04X", motor_current_read[axis_index]);
-                float im = current_from_adc_count(motor_current_read[axis_index], axis_index);
-                ImGui::LabelText("I", current_format, im);
-                ImGui::ProgressBar(std::abs(im)/Imax(axis_index),ImVec2(0.0f, 0.0f),"");
-                ImGui::DragFloat("I setp", &(current_setpoint[axis_index]), 0.001, -current_max, current_max, current_format);
-                need_to_set_current |= ImGui::IsItemEdited();
-                if (ImGui::Button("0")) {
-                    current_setpoint[axis_index] = 0;
-                    need_to_set_current |= 1;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("0.05")) {
-                    current_setpoint[axis_index] = 0.05;
-                    need_to_set_current |= 1;
-                }
-                ImGui::SameLine();           
-                if (ImGui::Button("0.5")) {
-                    current_setpoint[axis_index] = 0.5;
-                    need_to_set_current |= 1;
-                }
-                ImGui::SameLine();          
-                if (ImGui::Button("-0.5")) {
-                    current_setpoint[axis_index] = -0.5;
-                    need_to_set_current |= 1;
-                }
-                auto i_setp_q = dac_count_from_current(current_setpoint[axis_index], axis_index);
-                if (need_to_set_current) {
-                    board->SetMotorCurrent(axis_index, i_setp_q);
-                }
+                }       
 
                 motor_voltage_read[axis_index] = board->GetMotorVoltageRatio(axis_index);
                 float vm = motor_voltage_read[axis_index] * 48.0f;
