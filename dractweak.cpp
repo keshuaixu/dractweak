@@ -485,8 +485,16 @@ int main(int argc, char** argv)
             ImGui::SameLine();
             if (ImGui::Button("unbypass")) {
                 Port->WriteQuadlet(BoardId, 0xB100, 0);
-            }      
-             
+            }  
+            if (ImGui::Button("send test lvds")) {
+                Port->WriteQuadlet(BoardId,0xB101 , 0x0);
+                Port->WriteQuadlet(BoardId, 0xB101, 0xAC450F28); 
+                for (int i=0; i < 48; i++)
+                    Port->WriteQuadlet(BoardId,0xB101 , 0x12121212);
+                Port->WriteQuadlet(BoardId,0xB101 , 0x2f1d); 
+                // quadlet_t cg;
+                // Port->ReadQuadlet(BoardId, 0xb001, cg);            
+            }
             ImGui::TableNextColumn();
             // if (ImGui::Button("start")) {
             //     current_history.clear();
