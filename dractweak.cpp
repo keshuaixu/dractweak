@@ -62,13 +62,13 @@ static void glfw_error_callback(int error, const char* description)
 }
 
 float current_from_adc_count(int count, int index) {
-    float scale = index < 2 ? 4000.0 : 16000.0;
+    float scale = index < 2 ? 4800.0 : 16000.0;
     return (count - 0x8000) / scale;
 }
 
 
 int dac_count_from_current(float current, int index) {
-    float scale = index < 2 ? 4000.0 : 16000.0;
+    float scale = index < 2 ? 4800.0 : 16000.0;
     int result = int(current * scale) + 0x8000;
     return std::clamp(result, 0, 0xffff);
 }
@@ -540,6 +540,7 @@ int main(int argc, char** argv)
             quadlet_t crc_good_count;
             quadlet_t crc_err_count;
             quadlet_t mv;
+            quadlet_t drac_status;
             quadlet_t esii_status;
             quadlet_t espm_adc;
             quadlet_t instrument_id;
@@ -550,6 +551,7 @@ int main(int argc, char** argv)
             Port->ReadQuadlet(BoardId, 0xb000, crc_err_count);
             Port->ReadQuadlet(BoardId, 0xb001, crc_good_count);
             Port->ReadQuadlet(BoardId, 0xb002, mv);
+            Port->ReadQuadlet(BoardId, 0xb003, drac_status);
             Port->ReadQuadlet(BoardId, 0xb010, esii_status);
             Port->ReadQuadlet(BoardId, 0xb011, espm_adc);
             Port->ReadQuadlet(BoardId, 0xb012, instrument_id);
@@ -565,6 +567,9 @@ int main(int argc, char** argv)
             ImGui::LabelText("build", "0x%08X", dev_build_number);
             ImGui::LabelText("inst model", "%lu", inst_model);
             ImGui::LabelText("inst v", "%lu", inst_version);
+            ImGui::RadioButton("safety chain read", (drac_status >> 1) & 1);
+            ImGui::RadioButton("espmv good", (drac_status >> 0) & 1);
+
 
             // ImGui::TableNextColumn();
             // ImGui::PlotLines("I", current_history.data(), tuning_pulse_width + 200, 0, NULL, FLT_MAX, FLT_MAX, ImVec2(600, 200), sizeof(float));

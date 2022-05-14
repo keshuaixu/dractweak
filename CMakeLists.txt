@@ -49,4 +49,8 @@ target_sources(dractweak
     "${IMPLOT_PATH}/implot_items.cpp"
     )
 target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw gl3w GLEW::GLEW ${CMAKE_DL_LIBS})
+
+add_executable(dractest dractest.cpp)
+target_link_libraries(dractest Amp1394)
+
 install(TARGETS dractweak DESTINATION bin)
