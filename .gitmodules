@@ -4,3 +4,6 @@
 [submodule "external/implot"]
 	path = external/implot
 	url = https://github.com/epezent/implot.git
+[submodule "external/mechatronics-software"]
+	path = external/mechatronics-software
+	url = git@github.com:jhu-cisst/mechatronics-software.git

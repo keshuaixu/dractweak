@@ -6,6 +6,7 @@
 #include <chrono>
 #include <thread>
 #include <iomanip>
+#include "CRC.h"
 
 
 void sleep(int t) {
@@ -29,8 +30,8 @@ int main(int argc, char** argv)
     std::cout << "dRAC factory test" << std::endl;
     std::cout << "Do not attach real robot." << std::endl;
 
-    BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_R_BC_W;
-    int board_id = 0;
+    BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
+    int board_id = 6;
     auto board = new AmpIO(board_id);
     std::string portDescription = "udp";
     auto Port = PortFactory(portDescription.c_str(), std::cout);
@@ -106,9 +107,13 @@ int main(int argc, char** argv)
     Port->ReadQuadlet(board_id, 0xb001, crc_good_count); 
     Port->WriteQuadlet(board_id,0xB101 , 0x0);
     Port->WriteQuadlet(board_id, 0xB101, 0xAC450F28); 
-    for (int i=0; i < 48; i++)
-        Port->WriteQuadlet(board_id,0xB101 , 0x12121212);
-    Port->WriteQuadlet(board_id,0xB101 , 0x2f1d);     
+    uint32_t lvds_tx_buf[64];
+    std::fill(std::begin(lvds_tx_buf), std::end(lvds_tx_buf), 0x12345678);
+    for (int i=0; i < sizeof(lvds_tx_buf) / 4; i++)
+        Port->WriteQuadlet(board_id,0xB101 , lvds_tx_buf[i]);    
+    const CRC::Parameters<crcpp_uint16, 16> parameters = { 0x1DB7, 0xFFFF, 0x0000, false, false };
+    auto crc = CRC::Calculate(reinterpret_cast<char*>(lvds_tx_buf), sizeof(lvds_tx_buf), parameters);
+    Port->WriteQuadlet(board_id,0xB101 , crc);     
     quadlet_t crc_good_count2;
     Port->ReadQuadlet(board_id, 0xb001, crc_good_count2);
     if (crc_good_count2 - crc_good_count == 1) pass(); else {

@@ -376,6 +376,7 @@ int main(int argc, char** argv)
             int bnum = atoi(argv[i]);
             if ((bnum >= 0) && (bnum < BoardIO::MAX_BOARDS)) {
                 board = new AmpIO(bnum);
+                BoardId = bnum;
                 std::cerr << "Selecting board " << bnum << std::endl;
             }
             else
