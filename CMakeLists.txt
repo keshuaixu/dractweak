@@ -24,9 +24,6 @@ cmake_policy (SET CMP0072 NEW)
 find_package(OpenGL REQUIRED)
 include_directories(${OPENGL_INCLUDE_DIRS})
 
-add_library("gl3w" "${IMGUI_PATH}/examples/libs/gl3w/GL/gl3w.c")
-include_directories("${IMGUI_PATH}/examples/libs/gl3w")
-
 find_package(GLEW REQUIRED)
 include_directories(${GLEW_INCLUDE_DIRS})
 
@@ -37,22 +34,23 @@ set_property(TARGET dractweak PROPERTY CXX_STANDARD 20)
 include_directories("${IMGUI_PATH};${IMGUI_PATH}/backends")
 include_directories("${IMPLOT_PATH}")
 
-target_sources(dractweak 
-    PUBLIC 
-    # "${CMAKE_CURRENT_SOURCE_DIR}/Amp1394Console.cpp"
-    "${IMGUI_PATH}/imgui.cpp"
-    "${IMGUI_PATH}/imgui_draw.cpp"
-    "${IMGUI_PATH}/imgui_demo.cpp"
-    "${IMGUI_PATH}/imgui_tables.cpp"
-    "${IMGUI_PATH}/imgui_widgets.cpp"
-    "${IMGUI_PATH}/backends/imgui_impl_opengl3.cpp"
-    "${IMGUI_PATH}/backends/imgui_impl_glfw.cpp"
-    "${IMPLOT_PATH}/implot.cpp"
-    "${IMPLOT_PATH}/implot_items.cpp"
-    )
-target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw gl3w GLEW::GLEW ${CMAKE_DL_LIBS})
+set(COMMON_FILES
+"${IMGUI_PATH}/imgui.cpp"
+"${IMGUI_PATH}/imgui_draw.cpp"
+"${IMGUI_PATH}/imgui_demo.cpp"
+"${IMGUI_PATH}/imgui_tables.cpp"
+"${IMGUI_PATH}/imgui_widgets.cpp"
+"${IMGUI_PATH}/backends/imgui_impl_opengl3.cpp"
+"${IMGUI_PATH}/backends/imgui_impl_glfw.cpp"
+"${IMPLOT_PATH}/implot.cpp"
+"${IMPLOT_PATH}/implot_items.cpp"
+)
+
+target_sources(dractweak PUBLIC ${COMMON_FILES})
+target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw GLEW::GLEW ${CMAKE_DL_LIBS})
 
 add_executable(dractest dractest.cpp)
-target_link_libraries(dractest Amp1394)
+target_sources(dractest PUBLIC ${COMMON_FILES})
+target_link_libraries(dractest Amp1394  OpenGL::GL OpenGL::GLU glfw GLEW::GLEW ${CMAKE_DL_LIBS})
 
 install(TARGETS dractweak DESTINATION bin)

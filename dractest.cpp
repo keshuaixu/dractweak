@@ -1,3 +1,4 @@
+#define IMGUI_IMPL_OPENGL_LOADER_GLEW
 #include <Amp1394/AmpIORevision.h>
 #include "PortFactory.h"
 #include "AmpIO.h"
@@ -7,7 +8,21 @@
 #include <thread>
 #include <iomanip>
 #include "CRC.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <stdio.h>
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+#include <GLES2/gl2.h>
+#endif
+#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+#include<thread>
+#include<mutex>
+#include <chrono>
 
+const auto mv_bit_to_volt = 1.31255e-3;
+
+std::mutex port_mutex;
 
 void sleep(int t) {
     std::this_thread::sleep_for(std::chrono::milliseconds(t));
@@ -25,7 +40,387 @@ void test(std::string s) {
     std::cout << std::setw(20) << s;
 }
 
-int main(int argc, char** argv)
+const auto red = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+const auto green = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
+ImU32 cell_bg_pass;
+ImU32 cell_bg_fail;
+ImU32 cell_bg_in_progress;
+ImU32 cell_bg_untested;
+
+
+
+static AmpIO* board;
+static BasePort* Port;
+static int board_id = 6;
+
+const int num_axes = 10;
+int motor_current_read[num_axes];
+float motor_voltage_read[num_axes];
+float mv = 48.0;
+
+enum result_t {
+    FAIL = 3,
+    PASS = 2,
+    IN_PROGRESS = 1,
+    UNTESTED = 0
+};
+
+result_t result_safety_relay_open = UNTESTED;
+result_t result_safety_relay_close = UNTESTED;
+result_t result_safety_chain_enable = UNTESTED;
+result_t result_safety_chain_disable = UNTESTED;
+result_t result_48V_on = UNTESTED;
+result_t result_48V_off = UNTESTED;
+result_t result_6V_on = UNTESTED;
+result_t result_6V_off = UNTESTED;
+result_t result_LVDS_loopback = UNTESTED;
+result_t result_adc_zero[10] = {UNTESTED};
+result_t result_hbridge[10] = {UNTESTED};
+
+void color_result(result_t result) {
+    switch (result) {
+        case PASS:
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_pass);
+            break;
+        case FAIL:
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_fail);
+            break;
+        case IN_PROGRESS:
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_in_progress);
+            break;
+        case UNTESTED:
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_untested);
+            break;
+    }
+}
+
+std::string get_result_string(result_t result) {
+    switch (result) {
+        case PASS:
+            return "[Pass]";
+        case FAIL:
+            return "[Fail]";
+        case IN_PROGRESS:
+            return "[In Progress]";
+        case UNTESTED:
+            return "[Untested]";
+    }
+}
+
+void display_result(result_t r) {
+    ImGui::Text(get_result_string(r).c_str());
+    color_result(r);
+}
+
+void test_safety_relay(){
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        board->WriteSafetyRelay(0);
+    }
+    sleep(100);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        if (board->ReadSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
+        board->WriteSafetyRelay(1);
+    }    
+    sleep(100);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);    
+        if (board->ReadSafetyRelayStatus() == 1) result_safety_relay_close = PASS; else result_safety_relay_close = FAIL;
+    }
+}
+
+float mv_volts_off;
+float mv_volts_on;
+void test_48v() {
+    quadlet_t mv;
+    board->SetPowerEnable(0);
+    sleep(500);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);  
+        Port->ReadQuadlet(board_id, 0xb002, mv);
+    }
+    mv_volts_off = mv_bit_to_volt * mv;
+    if (mv_volts_off < 5.0) result_48V_off = PASS; else result_48V_off = FAIL;
+
+    board->SetPowerEnable(1);
+    sleep(500);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);  
+        Port->ReadQuadlet(board_id, 0xb002, mv);
+    }
+    mv_volts_on = mv_bit_to_volt * mv;
+    if (mv_volts_on > 43.0 && mv_volts_on < 53.0) result_48V_on = PASS; else result_48V_on = FAIL;
+}
+
+quadlet_t adc_zero[10] = {0};
+
+void test_lvds_loopback() {
+    quadlet_t crc_good_count;
+    const std::lock_guard<std::mutex> lock(port_mutex);
+    Port->ReadQuadlet(board_id, 0xb001, crc_good_count); 
+    Port->WriteQuadlet(board_id,0xB101 , 0x0);
+    Port->WriteQuadlet(board_id, 0xB101, 0xAC450F28); 
+    uint32_t lvds_tx_buf[64];
+    std::fill(std::begin(lvds_tx_buf), std::end(lvds_tx_buf), 0x12345678);
+    for (int i=0; i < sizeof(lvds_tx_buf) / 4; i++)
+        Port->WriteQuadlet(board_id,0xB101 , lvds_tx_buf[i]);    
+    const CRC::Parameters<crcpp_uint16, 16> parameters = { 0x1DB7, 0xFFFF, 0x0000, false, false };
+    auto crc = CRC::Calculate(reinterpret_cast<char*>(lvds_tx_buf), sizeof(lvds_tx_buf), parameters);
+    Port->WriteQuadlet(board_id,0xB101 , crc);     
+    quadlet_t crc_good_count2;
+    Port->ReadQuadlet(board_id, 0xb001, crc_good_count2);
+    if (crc_good_count2 - crc_good_count == 1) result_LVDS_loopback = PASS; else {
+        result_LVDS_loopback = FAIL;
+        std::cerr << "Did you attach the loopback plug?" << std::endl;
+    }    
+}
+
+void test_all() {
+    test_safety_relay();
+    test_48v();
+    test_lvds_loopback();
+}
+
+void update_all_boards() {
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        if (Port && Port->IsOK()) {
+            Port->WriteAllBoards();
+            Port->ReadAllBoards();
+        }
+    }
+}
+
+
+static void glfw_error_callback(int error, const char* description)
+{
+    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
+
+int main(int, char**)
+{
+    // Setup window
+    glfwSetErrorCallback(glfw_error_callback);
+    if (!glfwInit())
+        return 1;
+
+    // Decide GL+GLSL versions
+#if defined(IMGUI_IMPL_OPENGL_ES2)
+    // GL ES 2.0 + GLSL 100
+    const char* glsl_version = "#version 100";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+#elif defined(__APPLE__)
+    // GL 3.2 + GLSL 150
+    const char* glsl_version = "#version 150";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
+#else
+    // GL 3.0 + GLSL 130
+    const char* glsl_version = "#version 130";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    //glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
+    //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
+#endif
+
+    // Create window with graphics context
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "dRAC factory test", NULL, NULL);
+    if (window == NULL)
+        return 1;
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1); // Enable vsync
+
+    // Setup Dear ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
+    //ImGui::StyleColorsLight();
+
+    // Setup Platform/Renderer backends
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+
+    // Load Fonts
+    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
+    // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
+    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
+    // - Read 'docs/FONTS.md' for more instructions and details.
+    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
+    //io.Fonts->AddFontDefault();
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
+    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
+    //IM_ASSERT(font != NULL);
+
+    // Our state
+    bool show_demo_window = false;
+    bool show_another_window = true;
+    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    cell_bg_pass = ImGui::GetColorU32(ImVec4(0.0f, 0.3f, 0.0f, 0.5f));
+    cell_bg_fail = ImGui::GetColorU32(ImVec4(0.3f, 0.0f, 0.0f, 0.5f));
+    cell_bg_in_progress = ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.0f, 0.5f));
+    cell_bg_untested = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.1f));    
+    std::thread(update_all_boards).detach();
+
+    // Main loop
+    while (!glfwWindowShouldClose(window))
+    {
+        // Poll and handle events (inputs, window resize, etc.)
+        // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
+        // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
+        // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
+        // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+        glfwPollEvents();
+
+        // Start the Dear ImGui frame
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        ImGui::SetNextWindowSize(ImVec2(width, height)); // ensures ImGui fits the GLFW window
+        ImGui::SetNextWindowPos(ImVec2(0, 0));        
+
+        ImGui::Begin("dRAC factory test");
+        ImGui::Text("This program tests the dRAC boards with special termination plug. Do not run the test with robot connected. You may damage the robot.");
+        ImGui::PushItemWidth(100);
+        static int ethfw = 1;
+        ImGui::InputInt("Board number", &board_id);  ImGui::SameLine();        
+        ImGui::RadioButton("Firewire", &ethfw, 0); ImGui::SameLine();
+        ImGui::RadioButton("Ethernet", &ethfw, 1); ImGui::SameLine();
+
+        if (ImGui::Button("Connect")) {
+            BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
+            std::string portDescription = ethfw ? "udp" : "fw";
+            Port = PortFactory(portDescription.c_str(), std::cout);
+            board = new AmpIO(board_id);
+            Port->AddBoard(board);
+            board->WriteWatchdogPeriodInSeconds(0);
+            Port->WriteQuadlet(board_id, 0xB100, 1); // bypass safety
+            Port->WriteAllBoards();            
+            if (Port && Port->IsOK()) Port->AddBoard(board);
+        }
+        ImGui::SameLine();
+        if (Port && Port->GetNumOfNodes() > 0) {
+            ImGui::TextColored(green, "Connected");
+        } else {
+            ImGui::TextColored(red, "Not connected");
+        }
+
+        // EthBasePort *ethPort = dynamic_cast<EthBasePort *>(Port);
+        if (Port && Port->GetNumOfNodes() > 0) {
+            ImGui::Separator();
+            ImGui::BeginTable("mv", 10);
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
+                ImGui::TableNextColumn();
+                ImGui::Text("0x%04X", motor_current_read[axis_index]);
+            }
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                motor_voltage_read[axis_index] = board->GetMotorVoltageRatio(axis_index);
+                ImGui::TableNextColumn();
+                ImGui::Text("%.02f", mv * motor_voltage_read[axis_index]);
+            } 
+            ImGui::EndTable();
+
+            ImGui::Separator();
+            static char sn_program[128] = "";
+            ImGui::InputText("SN to program", sn_program, sizeof(sn_program)); ImGui::SameLine();
+            ImGui::Button("Program dRAC SN"); ImGui::SameLine();      
+            ImGui::Button("Read dRAC SN"); ImGui::SameLine();            
+            if (ImGui::Button("Test all")) {
+                std::thread(test_all).detach();
+            }
+            ImGui::Separator();
+
+            ImGui::BeginTable("tests", 11);
+            ImGui::TableNextColumn();
+            ImGui::Text("Safety relay");
+            ImGui::TableNextColumn();
+            ImGui::Text("Open");
+            display_result(result_safety_relay_open);
+            ImGui::TableNextColumn();
+            ImGui::Text("Close");
+            display_result(result_safety_relay_close);
+
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("48V");
+            ImGui::TableNextColumn();
+            ImGui::Text("Off");
+            ImGui::Text("%.2f V", mv_volts_off);
+            display_result(result_48V_off);
+            ImGui::TableNextColumn();
+            ImGui::Text("On");
+            ImGui::Text("%.2f V", mv_volts_on);
+            display_result(result_48V_on);              
+
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("ADC zero");
+            for (int i = 0; i < num_axes; i++) {
+                ImGui::TableNextColumn();
+                ImGui::Text("0x%04X", adc_zero[i]);
+                display_result(result_adc_zero[i]);                  
+            }
+
+
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("LVDS loopback");
+            ImGui::TableNextColumn();
+            // ImGui::Text("%d", result_LVDS_loopback);
+            ImGui::Text(get_result_string(result_LVDS_loopback).c_str());
+            color_result(result_LVDS_loopback);
+            
+
+            ImGui::EndTable();
+
+
+        }
+
+
+        
+        ImGui::End();
+
+        // Rendering
+        ImGui::Render();
+        int display_w, display_h;
+        glfwGetFramebufferSize(window, &display_w, &display_h);
+        glViewport(0, 0, display_w, display_h);
+        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(window);
+    }
+
+    // Cleanup
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
+
+    return 0;
+}
+
+int main2(int argc, char** argv)
 {
     std::cout << "dRAC factory test" << std::endl;
     std::cout << "Do not attach real robot." << std::endl;
