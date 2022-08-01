@@ -16,6 +16,7 @@
 #include "PortFactory.h"
 #include "AmpIO.h"
 #include "Amp1394Time.h"
+#include "Amp1394BSwap.h"
 
 
 #include <thread>
@@ -487,6 +488,16 @@ int main(int argc, char** argv)
             if (ImGui::Button("unbypass")) {
                 Port->WriteQuadlet(BoardId, 0xB100, 0);
             }  
+
+            if (ImGui::Button("release suj")) {
+                Port->WriteQuadlet(BoardId, 0x6, 0x0101);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("unrelease")) {
+                Port->WriteQuadlet(BoardId, 0x6, 0x0100);
+            }  
+
+
             if (ImGui::Button("send test lvds")) {
                 Port->WriteQuadlet(BoardId,0xB101 , 0x0);
                 Port->WriteQuadlet(BoardId, 0xB101, 0xAC450F28); 
@@ -568,8 +579,18 @@ int main(int argc, char** argv)
             ImGui::LabelText("build", "0x%08X", dev_build_number);
             ImGui::LabelText("inst model", "%lu", inst_model);
             ImGui::LabelText("inst v", "%lu", inst_version);
-            ImGui::RadioButton("safety chain read", (drac_status >> 1) & 1);
             ImGui::RadioButton("espmv good", (drac_status >> 0) & 1);
+            ImGui::RadioButton("safety chain read", (drac_status >> 1) & 1);
+            ImGui::RadioButton("espm comm good", (drac_status >> 2) & 1);
+            ImGui::RadioButton("esii/cc comm good", (drac_status >> 3) & 1);
+            ImGui::RadioButton("is ecm", (drac_status >> 4) & 1);
+
+            // quadlet_t esii_buffer[64];
+            // Port->ReadBlock(BoardId, 0xa000, esii_buffer, 64*4);
+            // for (int offset = 48; offset < 55; offset += 1) {
+            //     ImGui::Text("0x%04X 0x%08X", offset, bswap_32(esii_buffer[offset]));
+            // }
+
 
 
             // ImGui::TableNextColumn();
