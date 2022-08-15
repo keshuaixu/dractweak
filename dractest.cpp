@@ -16,9 +16,8 @@
 #include <GLES2/gl2.h>
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
-#include<thread>
 #include<mutex>
-#include <chrono>
+#include <cmath> 
 
 const auto mv_bit_to_volt = 1.31255e-3;
 
@@ -40,6 +39,7 @@ void test(std::string s) {
     std::cout << std::setw(20) << s;
 }
 
+
 const auto red = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
 const auto green = ImVec4(0.0f, 1.0f, 0.0f, 1.0f);
 ImU32 cell_bg_pass;
@@ -57,6 +57,17 @@ const int num_axes = 10;
 int motor_current_read[num_axes];
 float motor_voltage_read[num_axes];
 float mv = 48.0;
+const float amps_to_bits[10] = {4800.0, 4800.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0};
+const char* channel_names[10] = {"M1", "M2", "M3", "M4", "M5", "M6", "M7", "B1", "B2", "B3"};
+void read_quadlet_threadsafe(unsigned char board_id, nodeaddr_t address, quadlet_t &data) {
+    const std::lock_guard<std::mutex> lock(port_mutex);  
+    Port->ReadQuadlet(board_id, address, data);
+}
+
+void write_quadlet_threadsafe(unsigned char board_id, nodeaddr_t address, quadlet_t data) {
+    const std::lock_guard<std::mutex> lock(port_mutex);  
+    Port->WriteQuadlet(board_id, address, data);
+}
 
 enum result_t {
     FAIL = 3,
@@ -67,14 +78,15 @@ enum result_t {
 
 result_t result_safety_relay_open = UNTESTED;
 result_t result_safety_relay_close = UNTESTED;
-result_t result_safety_chain_enable = UNTESTED;
-result_t result_safety_chain_disable = UNTESTED;
+result_t result_safety_chain = UNTESTED;
 result_t result_48V_on = UNTESTED;
 result_t result_48V_off = UNTESTED;
 result_t result_6V_on = UNTESTED;
 result_t result_6V_off = UNTESTED;
 result_t result_LVDS_loopback = UNTESTED;
 result_t result_adc_zero[10] = {UNTESTED};
+result_t result_drive_pos[10] = {UNTESTED};
+result_t result_drive_neg[10] = {UNTESTED};
 result_t result_hbridge[10] = {UNTESTED};
 
 void color_result(result_t result) {
@@ -113,63 +125,128 @@ void display_result(result_t r) {
 }
 
 void test_safety_relay(){
-    {
-        const std::lock_guard<std::mutex> lock(port_mutex);
-        board->WriteSafetyRelay(0);
-    }
-    sleep(100);
-    {
-        const std::lock_guard<std::mutex> lock(port_mutex);
-        if (board->ReadSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
-        board->WriteSafetyRelay(1);
-    }    
-    sleep(100);
-    {
-        const std::lock_guard<std::mutex> lock(port_mutex);    
-        if (board->ReadSafetyRelayStatus() == 1) result_safety_relay_close = PASS; else result_safety_relay_close = FAIL;
-    }
+    board->SetSafetyRelay(0);
+    sleep(200);
+    if (board->ReadSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
+    board->SetSafetyRelay(1);
+    sleep(200);
+    if (board->GetSafetyRelayStatus() == 1) result_safety_relay_close = PASS; else result_safety_relay_close = FAIL;
 }
 
 float mv_volts_off;
 float mv_volts_on;
 void test_48v() {
     quadlet_t mv;
+    board->SetSafetyRelay(1);
     board->SetPowerEnable(0);
     sleep(500);
-    {
-        const std::lock_guard<std::mutex> lock(port_mutex);  
-        Port->ReadQuadlet(board_id, 0xb002, mv);
-    }
+    read_quadlet_threadsafe(board_id, 0xb002, mv);
     mv_volts_off = mv_bit_to_volt * mv;
     if (mv_volts_off < 5.0) result_48V_off = PASS; else result_48V_off = FAIL;
 
     board->SetPowerEnable(1);
     sleep(500);
-    {
-        const std::lock_guard<std::mutex> lock(port_mutex);  
-        Port->ReadQuadlet(board_id, 0xb002, mv);
-    }
+    read_quadlet_threadsafe(board_id, 0xb002, mv);
     mv_volts_on = mv_bit_to_volt * mv;
     if (mv_volts_on > 43.0 && mv_volts_on < 53.0) result_48V_on = PASS; else result_48V_on = FAIL;
 }
 
-quadlet_t adc_zero[10] = {0};
+void test_safety_chain() {
+    quadlet_t mv;
+    board->SetSafetyRelay(1);   
+    board->SetPowerEnable(1);
+    sleep(500);
+    board->SetSafetyRelay(0);
+    sleep(500);
+    if (mv_volts_off < 5.0) result_safety_chain = PASS; else result_safety_chain = FAIL;
+}
+
+quadlet_t adc_zero[num_axes] = {0};
+const int ADC_ZERO_TOLERANCE = 0x40;
+void test_adc_zero() {
+    bool adc_zero_fail[10] = {false};
+    board->SetPowerEnable(0);
+    sleep(200);
+    for (int i = 0; i < 1000; i++) {
+        for (int index = 0; index < num_axes; index++) {
+            auto current = board->GetMotorCurrent(index);
+            if (i == 0) {
+                adc_zero[index] = current;
+            } else {
+                if (current < 0x8000 - ADC_ZERO_TOLERANCE || current > 0x8000 + ADC_ZERO_TOLERANCE) {
+                    adc_zero[index] = current;
+                    adc_zero_fail[index] = true;
+                }
+            }
+        }
+        sleep(1);
+    }
+
+    for (int index = 0; index < num_axes; index++) {
+        if (adc_zero_fail[index]) {
+            result_adc_zero[index] = FAIL;
+        } else {
+            result_adc_zero[index] = PASS;
+        }
+    }
+}
+
+const float resistance = 0.5;
+const float test_current = 1.0;
+const float current_threshold = 0.2;
+float drive_pos_current[10] = {0.0};
+float drive_neg_current[10] = {0.0};
+void test_open_loop_drive() {
+    auto mv = std::max(mv_volts_on, 10.0f); // avoid super high current caused by erronous mv sense
+    quadlet_t pos_dir_adc[num_axes] = {0};
+    quadlet_t neg_dir_adc[num_axes] = {0};
+    board->SetPowerEnable(1);
+    sleep(200);
+    for (int index = 0; index < num_axes; index++) {
+        board->SetAmpEnable(index, 1);
+        board->SetMotorVoltageRatio(index, (test_current * resistance) / mv);
+        sleep(200);
+        pos_dir_adc[index] = board->GetMotorCurrent(index);
+        auto i_pos = ((signed)pos_dir_adc[index] - 0x8000) / amps_to_bits[index];
+        drive_pos_current[index] = i_pos;
+        if ( std::abs(i_pos - test_current) < current_threshold ) {
+            result_drive_pos[index] = PASS;
+        } else {
+            result_drive_pos[index] = FAIL;
+        }
+
+        board->SetMotorVoltageRatio(index, -(test_current * resistance) / mv);
+        sleep(200);
+        neg_dir_adc[index] = board->GetMotorCurrent(index);        
+        board->SetMotorVoltageRatio(index, 0.0);
+        board->SetAmpEnable(index, 0);
+        auto i_neg = ((signed)neg_dir_adc[index] - 0x8000) / amps_to_bits[index];
+        // std::cout << pos_dir_adc[index] - 0x8000 << std::endl;
+        drive_neg_current[index] = i_neg;
+        if ( std::abs(i_neg + test_current) < current_threshold ) {
+            result_drive_neg[index] = PASS;
+        } else {
+            result_drive_neg[index] = FAIL;
+        }
+    }
+    board->SetPowerEnable(0);
+}
 
 void test_lvds_loopback() {
     quadlet_t crc_good_count;
-    const std::lock_guard<std::mutex> lock(port_mutex);
-    Port->ReadQuadlet(board_id, 0xb001, crc_good_count); 
-    Port->WriteQuadlet(board_id,0xB101 , 0x0);
-    Port->WriteQuadlet(board_id, 0xB101, 0xAC450F28); 
+    // const std::lock_guard<std::mutex> lock(port_mutex);
+    read_quadlet_threadsafe(board_id, 0xb001, crc_good_count); 
+    write_quadlet_threadsafe(board_id, 0xB101, 0x0);
+    write_quadlet_threadsafe(board_id, 0xB101, 0xAC450F28); 
     uint32_t lvds_tx_buf[64];
     std::fill(std::begin(lvds_tx_buf), std::end(lvds_tx_buf), 0x12345678);
     for (int i=0; i < sizeof(lvds_tx_buf) / 4; i++)
-        Port->WriteQuadlet(board_id,0xB101 , lvds_tx_buf[i]);    
+        write_quadlet_threadsafe(board_id,0xB101 , lvds_tx_buf[i]);    
     const CRC::Parameters<crcpp_uint16, 16> parameters = { 0x1DB7, 0xFFFF, 0x0000, false, false };
     auto crc = CRC::Calculate(reinterpret_cast<char*>(lvds_tx_buf), sizeof(lvds_tx_buf), parameters);
-    Port->WriteQuadlet(board_id,0xB101 , crc);     
+    write_quadlet_threadsafe(board_id,0xB101 , crc);     
     quadlet_t crc_good_count2;
-    Port->ReadQuadlet(board_id, 0xb001, crc_good_count2);
+    read_quadlet_threadsafe(board_id, 0xb001, crc_good_count2);
     if (crc_good_count2 - crc_good_count == 1) result_LVDS_loopback = PASS; else {
         result_LVDS_loopback = FAIL;
         std::cerr << "Did you attach the loopback plug?" << std::endl;
@@ -179,6 +256,9 @@ void test_lvds_loopback() {
 void test_all() {
     test_safety_relay();
     test_48v();
+    test_safety_chain();
+    test_adc_zero();
+    test_open_loop_drive();
     test_lvds_loopback();
 }
 
@@ -270,8 +350,8 @@ int main(int, char**)
     bool show_demo_window = false;
     bool show_another_window = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-    cell_bg_pass = ImGui::GetColorU32(ImVec4(0.0f, 0.3f, 0.0f, 0.5f));
-    cell_bg_fail = ImGui::GetColorU32(ImVec4(0.3f, 0.0f, 0.0f, 0.5f));
+    cell_bg_pass = ImGui::GetColorU32(ImVec4(0.0f, 0.3f, 0.0f, 0.7f));
+    cell_bg_fail = ImGui::GetColorU32(ImVec4(0.3f, 0.0f, 0.0f, 0.7f));
     cell_bg_in_progress = ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.0f, 0.5f));
     cell_bg_untested = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.1f));    
     std::thread(update_all_boards).detach();
@@ -328,6 +408,7 @@ int main(int, char**)
             for (int axis_index = 0; axis_index < 10; axis_index++) {
                 motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
                 ImGui::TableNextColumn();
+                ImGui::Text(channel_names[axis_index]);
                 ImGui::Text("0x%04X", motor_current_read[axis_index]);
             }
             for (int axis_index = 0; axis_index < 10; axis_index++) {
@@ -367,27 +448,52 @@ int main(int, char**)
             ImGui::TableNextColumn();
             ImGui::Text("On");
             ImGui::Text("%.2f V", mv_volts_on);
-            display_result(result_48V_on);              
+            display_result(result_48V_on);        
+
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("Safety chain");
+            ImGui::TableNextColumn();
+            ImGui::Text("Cut");
+            display_result(result_safety_chain);
 
             ImGui::TableNextRow();    
             ImGui::TableNextColumn();
             ImGui::Text("ADC zero");
             for (int i = 0; i < num_axes; i++) {
                 ImGui::TableNextColumn();
+                ImGui::Text(channel_names[i]);
                 ImGui::Text("0x%04X", adc_zero[i]);
                 display_result(result_adc_zero[i]);                  
             }
 
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("Amps pos");
+            for (int i = 0; i < num_axes; i++) {
+                ImGui::TableNextColumn();
+                ImGui::Text(channel_names[i]);
+                ImGui::Text("%.2f A", drive_pos_current[i]);
+                display_result(result_drive_pos[i]);                  
+            }
 
             ImGui::TableNextRow();    
             ImGui::TableNextColumn();
-            ImGui::Text("LVDS loopback");
-            ImGui::TableNextColumn();
-            // ImGui::Text("%d", result_LVDS_loopback);
-            ImGui::Text(get_result_string(result_LVDS_loopback).c_str());
-            color_result(result_LVDS_loopback);
-            
+            ImGui::Text("Amps neg");
+            for (int i = 0; i < num_axes; i++) {
+                ImGui::TableNextColumn();
+                ImGui::Text(channel_names[i]);
+                ImGui::Text("%.2f A", drive_neg_current[i]);
+                display_result(result_drive_neg[i]);                  
+            }            
 
+            ImGui::TableNextRow();    
+            ImGui::TableNextColumn();
+            ImGui::Text("LVDS");
+            ImGui::TableNextColumn();
+            ImGui::Text("Loopback");
+            display_result(result_LVDS_loopback);
+            
             ImGui::EndTable();
 
 
