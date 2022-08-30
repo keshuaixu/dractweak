@@ -250,6 +250,7 @@ void test_lvds_loopback() {
     if (crc_good_count2 - crc_good_count == 1) result_LVDS_loopback = PASS; else {
         result_LVDS_loopback = FAIL;
         std::cerr << "Did you attach the loopback plug?" << std::endl;
+        std::cerr << crc_good_count << " " << crc_good_count2 << std::endl;
     }    
 }
 
@@ -425,6 +426,10 @@ int main(int, char**)
             ImGui::Button("Read dRAC SN"); ImGui::SameLine();            
             if (ImGui::Button("Test all")) {
                 std::thread(test_all).detach();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Test lvds")) {
+                std::thread(test_lvds_loopback).detach();
             }
             ImGui::Separator();
 

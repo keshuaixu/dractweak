@@ -500,9 +500,14 @@ int main(int argc, char** argv)
 
             if (ImGui::Button("send test lvds")) {
                 Port->WriteQuadlet(BoardId,0xB101 , 0x0);
+                Amp1394_Sleep(0.01);
                 Port->WriteQuadlet(BoardId, 0xB101, 0xAC450F28); 
-                for (int i=0; i < 48; i++)
+                Amp1394_Sleep(0.01);
+                for (int i=0; i < 48; i++){
                     Port->WriteQuadlet(BoardId,0xB101 , 0x12121212);
+                    Amp1394_Sleep(0.01);
+                }
+
                 Port->WriteQuadlet(BoardId,0xB101 , 0x2f1d); 
                 // quadlet_t cg;
                 // Port->ReadQuadlet(BoardId, 0xb001, cg);            
