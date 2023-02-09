@@ -31,7 +31,7 @@ add_executable(dractweak dractweak.cpp)
 set_property(TARGET dractweak PROPERTY CXX_STANDARD 20)
 
 
-include_directories("${IMGUI_PATH};${IMGUI_PATH}/backends")
+include_directories("${IMGUI_PATH};${IMGUI_PATH}/backends;${IMGUI_PATH}/misc/cpp")
 include_directories("${IMPLOT_PATH}")
 
 set(COMMON_FILES
@@ -42,6 +42,7 @@ set(COMMON_FILES
 "${IMGUI_PATH}/imgui_widgets.cpp"
 "${IMGUI_PATH}/backends/imgui_impl_opengl3.cpp"
 "${IMGUI_PATH}/backends/imgui_impl_glfw.cpp"
+"${IMGUI_PATH}/misc/cpp/imgui_stdlib.cpp"
 "${IMPLOT_PATH}/implot.cpp"
 "${IMPLOT_PATH}/implot_items.cpp"
 )

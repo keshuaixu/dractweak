@@ -23,6 +23,11 @@
 #include "EthBasePort.h"
 #include <mutex> 
 
+#include <iostream>
+#include <fstream>
+static uint16_t flash_data[0x400000];
+
+
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
 // About Desktop OpenGL function loaders:
@@ -346,8 +351,8 @@ int main(int argc, char** argv)
     bool showTime = false; // whether to display time information
 
     // measure time between reads
-    AmpIO_UInt32 maxTime = 0;
-    AmpIO_UInt32 lastTime = 0;
+    uint32_t maxTime = 0;
+    uint32_t lastTime = 0;
 
     unsigned int curAxis = 0;     // Current axis (0=all, 1-8)
     unsigned int curBoardIndex = 0;
@@ -474,7 +479,7 @@ int main(int argc, char** argv)
             }
             if (ImGui::Checkbox("ESPMV", &espmv)) {
                 if (ImGui::IsItemEdited()) {
-                    Port->WriteQuadlet(BoardId, 0x9003, espmv);
+                    Port->WriteQuadlet(BoardId, 0xb102, espmv);
                 }
             }
 
@@ -510,8 +515,32 @@ int main(int argc, char** argv)
 
                 Port->WriteQuadlet(BoardId,0xB101 , 0x2f1d); 
                 // quadlet_t cg;
-                // Port->ReadQuadlet(BoardId, 0xb001, cg);            
+                // Port->ReadQuadlet(BoardId, 0xb001, cg);          
             }
+            static float col1[3] = { 1.0f, 0.0f, 0.2f };
+            ImGui::ColorEdit3("color 1", col1); 
+            quadlet_t color_command = (1 << 31) | (int(col1[0] * 15) << 10) | (int(col1[1] * 15) << 5) | (int(col1[2] * 15));
+            Port->WriteQuadlet(BoardId, 0xa001, color_command);
+            ImGui::Text("color command = %x", color_command);
+            if (ImGui::Button("dump flash")) {
+                for (size_t i=0; i < 0x400000; i+=1) {
+                    quadlet_t flash_command = (1 << 24) | i ;
+                    Port->WriteQuadlet(BoardId, 0xa002, flash_command);
+                    if (i == 0) {
+                        Amp1394_Sleep(0.5);
+                    }
+                    quadlet_t data;
+                    while (i & 0xffff != data >> 16) {
+                        Port->ReadQuadlet(BoardId, 0xa031, data);
+                    }
+                    flash_data[i] = data & 0xffff;
+                    printf("%x: %x\n", i, data & 0xffff);
+                }
+                std::ofstream file("espm_flash_dump.bin", std::ios::binary);
+                file.write((char*)flash_data, 0x400000 * 2);
+                file.close();
+            }
+            
             ImGui::TableNextColumn();
             // if (ImGui::Button("start")) {
             //     current_history.clear();
@@ -563,8 +592,10 @@ int main(int argc, char** argv)
             quadlet_t instrument_id;
             quadlet_t instrument_id2;
             quadlet_t dev_build_number;
-            uint32_t inst_model = board->SPSMReadToolModel();
-            uint8_t inst_version = board->SPSMReadToolVersion();
+            uint32_t inst_model;
+            uint8_t inst_version;
+            std::string inst_name;
+            board->DallasReadTool(inst_model, inst_version, inst_name);
             Port->ReadQuadlet(BoardId, 0xb000, crc_err_count);
             Port->ReadQuadlet(BoardId, 0xb001, crc_good_count);
             Port->ReadQuadlet(BoardId, 0xb002, mv);

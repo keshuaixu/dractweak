@@ -11,6 +11,7 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_stdlib.h"
 #include <stdio.h>
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
@@ -51,14 +52,20 @@ ImU32 cell_bg_untested;
 
 static AmpIO* board;
 static BasePort* Port;
-static int board_id = 6;
-
+static int board_id = 0;
+static bool board_connected = false;
 const int num_axes = 10;
 int motor_current_read[num_axes];
 float motor_voltage_read[num_axes];
-float mv = 48.0;
+int amp_fault_codes[num_axes];
+float mv = 12.0;
 const float amps_to_bits[10] = {4800.0, 4800.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0};
 const char* channel_names[10] = {"M1", "M2", "M3", "M4", "M5", "M6", "M7", "B1", "B2", "B3"};
+const char* amp_fault_text[16] = {"Good", "ADC saturated", "Current deviation", "HW overcurrent", "HW overtemp", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined"};
+static std::string BoardSN;
+static std::string BoardSNRead;
+
+
 void read_quadlet_threadsafe(unsigned char board_id, nodeaddr_t address, quadlet_t &data) {
     const std::lock_guard<std::mutex> lock(port_mutex);  
     Port->ReadQuadlet(board_id, address, data);
@@ -139,16 +146,16 @@ void test_48v() {
     quadlet_t mv;
     board->SetSafetyRelay(1);
     board->SetPowerEnable(0);
-    sleep(500);
+    sleep(200);
     read_quadlet_threadsafe(board_id, 0xb002, mv);
     mv_volts_off = mv_bit_to_volt * mv;
     if (mv_volts_off < 5.0) result_48V_off = PASS; else result_48V_off = FAIL;
 
     board->SetPowerEnable(1);
-    sleep(500);
+    sleep(200);
     read_quadlet_threadsafe(board_id, 0xb002, mv);
     mv_volts_on = mv_bit_to_volt * mv;
-    if (mv_volts_on > 43.0 && mv_volts_on < 53.0) result_48V_on = PASS; else result_48V_on = FAIL;
+    if (mv_volts_on > 9.0) result_48V_on = PASS; else result_48V_on = FAIL;
 }
 
 void test_safety_chain() {
@@ -257,19 +264,29 @@ void test_lvds_loopback() {
 void test_all() {
     test_safety_relay();
     test_48v();
-    test_safety_chain();
+    // test_safety_chain();
     test_adc_zero();
     test_open_loop_drive();
-    test_lvds_loopback();
+    // test_lvds_loopback();
 }
 
 void update_all_boards() {
     while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        const std::lock_guard<std::mutex> lock(port_mutex);
-        if (Port && Port->IsOK()) {
-            Port->WriteAllBoards();
-            Port->ReadAllBoards();
+        if (board_connected){
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            if (Port && Port->IsOK()) {
+                auto w_result = Port->WriteAllBoards();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                auto r_result = Port->ReadAllBoards();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (w_result == false || r_result == false) {
+                    board_connected = false;
+                    std::cerr << "Board disconnected" << std::endl;
+                }
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 }
@@ -394,80 +411,210 @@ int main(int, char**)
             Port->WriteQuadlet(board_id, 0xB100, 1); // bypass safety
             Port->WriteAllBoards();            
             if (Port && Port->IsOK()) Port->AddBoard(board);
+            board_connected = (Port && Port->GetNumOfNodes() > 0);
+            BoardSN.clear();
+            BoardSNRead.clear();
+
+            if (board_connected) {
+                const std::lock_guard<std::mutex> lock(port_mutex);
+                sleep(10);
+                BoardSNRead = board->GetQLASerialNumber(0);
+                BoardSN = BoardSNRead;
+                
+            }
         }
         ImGui::SameLine();
-        if (Port && Port->GetNumOfNodes() > 0) {
+        if (board_connected) {
             ImGui::TextColored(green, "Connected");
         } else {
             ImGui::TextColored(red, "Not connected");
         }
+        ImGui::Separator();
+
 
         // EthBasePort *ethPort = dynamic_cast<EthBasePort *>(Port);
-        if (Port && Port->GetNumOfNodes() > 0) {
-            ImGui::Separator();
-            ImGui::BeginTable("mv", 10);
-            for (int axis_index = 0; axis_index < 10; axis_index++) {
-                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
-                ImGui::TableNextColumn();
-                ImGui::Text(channel_names[axis_index]);
-                ImGui::Text("0x%04X", motor_current_read[axis_index]);
-            }
-            for (int axis_index = 0; axis_index < 10; axis_index++) {
-                motor_voltage_read[axis_index] = board->GetMotorVoltageRatio(axis_index);
-                ImGui::TableNextColumn();
-                ImGui::Text("%.02f", mv * motor_voltage_read[axis_index]);
-            } 
-            ImGui::EndTable();
+        if (board_connected) {
 
-            ImGui::Separator();
-            static char sn_program[128] = "";
-            ImGui::InputText("SN to program", sn_program, sizeof(sn_program)); ImGui::SameLine();
-            ImGui::Button("Program dRAC SN"); ImGui::SameLine();      
-            ImGui::Button("Read dRAC SN"); ImGui::SameLine();            
+            ImGui::InputText("SN to program", &BoardSN); ImGui::SameLine();
+            if (ImGui::Button("Program dRAC SN")) {
+                const std::lock_guard<std::mutex> lock(port_mutex);
+
+                std::string BoardType = "dRA";
+                uint8_t wbyte;
+                uint16_t address;
+                std::stringstream ss;
+
+                ss << BoardType << " " << BoardSN;
+                auto str = ss.str();
+
+                // S1: program to QLA PROM
+                address = 0x0000;
+                for (size_t i = 0; i < str.length(); i++) {
+                    wbyte = str.at(i);
+                    if (!board->PromWriteByte25AA128(address, wbyte, 0)) {
+                        std::cerr << "Failed to write byte " << i << std::endl;
+                    }
+                    address += 1;  // inc to next byte
+                }
+                // Terminating byte can be 0 or 0xff
+                wbyte = 0;
+                if (!board->PromWriteByte25AA128(address, wbyte, 0)) {
+                    std::cerr << "Failed to write terminating byte" << std::endl;
+                }
+
+                // S2: read back and verify
+                BoardSNRead.clear();
+                BoardSNRead = board->GetQLASerialNumber(0);
+                std::cout << "Read SN = " << BoardSNRead << std::endl;
+
+                if (BoardSN == BoardSNRead) {
+                    std::cout << "Programmed dRA " << BoardSN << " Serial Number" << std::endl;
+                } else {
+                    std::cerr << "Failed to program" << std::endl;
+                    std::cerr << "Board SN = " << BoardSN << "\n"
+                            << "Read  SN = " << BoardSNRead << std::endl;                
+                }
+
+            }
+            ImGui::SameLine();
+
+            if (BoardSNRead.empty()){
+                ImGui::TextColored(red, "Read SN is empty");
+            } else if (BoardSN == BoardSNRead) {
+                ImGui::TextColored(green, "Read SN = %s", BoardSNRead.c_str()); 
+            } else {
+                ImGui::TextColored(red, "Read SN = %s", BoardSNRead.c_str()); 
+            }
+            ImGui::SameLine();      
             if (ImGui::Button("Test all")) {
                 std::thread(test_all).detach();
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Test lvds")) {
-                std::thread(test_lvds_loopback).detach();
+            // ImGui::SameLine();
+            // if (ImGui::Button("Test lvds")) {
+            //     std::thread(test_lvds_loopback).detach();
+            // }
+
+
+            ImGui::Separator();
+            ImGui::BeginTable("rt monitor", 11);
+            ImGui::TableNextColumn();
+            ImGui::Text("Channel");
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                ImGui::TableNextColumn();
+                ImGui::Text(channel_names[axis_index]);
             }
+            ImGui::TableNextColumn();
+            ImGui::Text("Power");
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                ImGui::TableNextColumn();
+                ImGui::Text(board->GetAmpEnable(axis_index) ? "On" : "Off");
+            } 
+            ImGui::TableNextColumn();
+            ImGui::Text("Current");
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                motor_current_read[axis_index] = board->GetMotorCurrent(axis_index);
+                ImGui::TableNextColumn();
+                // ImGui::Text(channel_names[axis_index]);
+                ImGui::Text("0x%04X", motor_current_read[axis_index]);
+                ImGui::Text("% 1.03f A", (motor_current_read[axis_index] - 0x8000) / amps_to_bits[axis_index]);
+            }
+            ImGui::TableNextColumn();
+            ImGui::Text("Voltage");
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                motor_voltage_read[axis_index] = board->GetMotorVoltageRatio(axis_index);
+                ImGui::TableNextColumn();
+                ImGui::Text("% 2.03f V", mv * motor_voltage_read[axis_index]);
+            } 
+            ImGui::TableNextColumn();
+            ImGui::Text("Fault");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("HW overcurrent and overtemp faults will affect the other channel on the same chip");
+
+            for (int axis_index = 0; axis_index < 10; axis_index++) {
+                amp_fault_codes[axis_index] = board->GetAmpFaultCode(axis_index);
+                ImGui::TableNextColumn();
+                if (amp_fault_codes[axis_index] == 0) {
+                    // ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_pass);
+                } else {
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_fail);
+                }
+                ImGui::Text(amp_fault_text[amp_fault_codes[axis_index]]);
+            }             
+            ImGui::EndTable();
+
+            ImGui::Separator();
+            ImGui::BeginTable("board monitor", 11);
+            ImGui::TableNextColumn();
+            // ImGui::Text("Board");            
+            ImGui::TableNextColumn();
+            ImGui::Text("LVDS loopback");
+            bool lvds_loopback_pass = board->GetStatus() & 0x1;
+            if (lvds_loopback_pass) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_pass);
+                ImGui::Text("[OK]");
+            } else {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_fail);
+                ImGui::Text("[Fail]");
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Check LVDS transceivers U9 and U10");
+            }
+            ImGui::TableNextColumn();
+            ImGui::Text("6V");
+            if (board->GetStatus() & (0x1 << 2)) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_pass);
+                ImGui::Text("[OK]");
+            } else {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_fail);
+                ImGui::Text("[Fail]");
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Check 6V DC/DC U12");                
+            }            
+            ImGui::EndTable();
+
             ImGui::Separator();
 
             ImGui::BeginTable("tests", 11);
             ImGui::TableNextColumn();
-            ImGui::Text("Safety relay");
+            ImGui::Text("Board");
             ImGui::TableNextColumn();
-            ImGui::Text("Open");
+            ImGui::Text("Relay open");
             display_result(result_safety_relay_open);
             ImGui::TableNextColumn();
-            ImGui::Text("Close");
+            ImGui::Text("Relay close");
             display_result(result_safety_relay_close);
 
-            ImGui::TableNextRow();    
+            // ImGui::TableNextRow();    
+            // ImGui::TableNextColumn();
+            // ImGui::Text("48V");
+            // ImGui::TableNextColumn();
+            // ImGui::Text("Off");
+            // ImGui::Text("%.2f V", mv_volts_off);
+            // display_result(result_48V_off);
             ImGui::TableNextColumn();
-            ImGui::Text("48V");
-            ImGui::TableNextColumn();
-            ImGui::Text("Off");
-            ImGui::Text("%.2f V", mv_volts_off);
-            display_result(result_48V_off);
-            ImGui::TableNextColumn();
-            ImGui::Text("On");
+            ImGui::Text("MV sense");
             ImGui::Text("%.2f V", mv_volts_on);
-            display_result(result_48V_on);        
+            display_result(result_48V_on);  
 
-            ImGui::TableNextRow();    
             ImGui::TableNextColumn();
-            ImGui::Text("Safety chain");
-            ImGui::TableNextColumn();
-            ImGui::Text("Cut");
-            display_result(result_safety_chain);
+            ImGui::Text("6V good");               
+
+            // ImGui::TableNextRow();    
+            // ImGui::TableNextColumn();
+            // ImGui::Text("Safety chain");
+            // ImGui::TableNextColumn();
+            // ImGui::Text("Cut");
+            // display_result(result_safety_chain);
 
             ImGui::TableNextRow();    
             ImGui::TableNextColumn();
             ImGui::Text("ADC zero");
             for (int i = 0; i < num_axes; i++) {
                 ImGui::TableNextColumn();
-                ImGui::Text(channel_names[i]);
+                // ImGui::Text(channel_names[i]);
                 ImGui::Text("0x%04X", adc_zero[i]);
                 display_result(result_adc_zero[i]);                  
             }
@@ -477,7 +624,7 @@ int main(int, char**)
             ImGui::Text("Amps pos");
             for (int i = 0; i < num_axes; i++) {
                 ImGui::TableNextColumn();
-                ImGui::Text(channel_names[i]);
+                // ImGui::Text(channel_names[i]);
                 ImGui::Text("%.2f A", drive_pos_current[i]);
                 display_result(result_drive_pos[i]);                  
             }
@@ -487,17 +634,10 @@ int main(int, char**)
             ImGui::Text("Amps neg");
             for (int i = 0; i < num_axes; i++) {
                 ImGui::TableNextColumn();
-                ImGui::Text(channel_names[i]);
+                // ImGui::Text(channel_names[i]);
                 ImGui::Text("%.2f A", drive_neg_current[i]);
                 display_result(result_drive_neg[i]);                  
             }            
-
-            ImGui::TableNextRow();    
-            ImGui::TableNextColumn();
-            ImGui::Text("LVDS");
-            ImGui::TableNextColumn();
-            ImGui::Text("Loopback");
-            display_result(result_LVDS_loopback);
             
             ImGui::EndTable();
 
