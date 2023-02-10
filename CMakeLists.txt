@@ -53,5 +53,6 @@ target_link_libraries(dractweak Amp1394 OpenGL::GL OpenGL::GLU glfw GLEW::GLEW $
 add_executable(dractest dractest.cpp)
 target_sources(dractest PUBLIC ${COMMON_FILES})
 target_link_libraries(dractest Amp1394  OpenGL::GL OpenGL::GLU glfw GLEW::GLEW ${CMAKE_DL_LIBS})
+set_property(TARGET dractest PROPERTY CXX_STANDARD 20)
 
 install(TARGETS dractweak DESTINATION bin)
