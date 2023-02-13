@@ -561,8 +561,19 @@ int main(int argc, char** argv)
             ImGui::RadioButton("watchdog timeout", board->GetWatchdogTimeoutStatus());
             ImGui::RadioButton("mv good", board->GetPowerStatus());
 
-            uint32_t digin = board->GetDigitalInput();
+            uint32_t status_reg = board->GetStatus();
             char name[32];
+            for (int i = 0; i < 32; i++) {
+                sprintf(name, "##sta%d", i);
+                ImGui::RadioButton(name, (status_reg >> i) & 1);
+                if (i % 8 != 7) ImGui::SameLine();
+            }
+
+            if (ImGui::Button("preload")) {
+                board->WriteEncoderPreload(0 ,1234);
+            }
+
+            uint32_t digin = board->GetDigitalInput();
             for (int i = 0; i < 32; i++) {
                 sprintf(name, "##digin%d", i);
                 ImGui::RadioButton(name, (digin >> i) & 1);

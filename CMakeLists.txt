@@ -56,3 +56,4 @@ target_link_libraries(dractest Amp1394  OpenGL::GL OpenGL::GLU glfw GLEW::GLEW $
 set_property(TARGET dractest PROPERTY CXX_STANDARD 20)
 
 install(TARGETS dractweak DESTINATION bin)
+install(TARGETS dractest DESTINATION bin)

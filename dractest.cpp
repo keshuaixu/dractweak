@@ -22,10 +22,13 @@
 #include <cmath>
 #include <array>
 #include <fstream>
+#include <filesystem>
 
 const std::string version = "1.0.0";
 const auto mv_bit_to_volt = 1.31255e-3;
-const int command_wait_time = 100;
+int command_wait_time = 50;
+int kp = 100;
+int ki = 10;
 
 std::mutex port_mutex;
 std::binary_semaphore rt_rw_sem{0};
@@ -169,10 +172,10 @@ void display_result(result_t r) {
 
 void test_safety_relay(){
     board->SetSafetyRelay(0);
-    sleep(300);
-    if (board->ReadSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
+    sleep(50);
+    if (board->GetSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
     board->SetSafetyRelay(1);
-    sleep(300);
+    sleep(50);
     if (board->GetSafetyRelayStatus() == 1) result_safety_relay_close = PASS; else result_safety_relay_close = FAIL;
 }
 
@@ -180,15 +183,6 @@ float mv_volts_off;
 float mv_volts_on;
 void test_48v() {
     quadlet_t mv;
-    board->SetSafetyRelay(1);
-    board->SetPowerEnable(0);
-    sleep(200);
-    read_quadlet_threadsafe(board_id, 0xb002, mv);
-    mv_volts_off = mv_bit_to_volt * mv;
-    if (mv_volts_off < 5.0) result_48V_off = PASS; else result_48V_off = FAIL;
-
-    board->SetPowerEnable(1);
-    sleep(200);
     read_quadlet_threadsafe(board_id, 0xb002, mv);
     mv_volts_on = mv_bit_to_volt * mv;
     if (mv_volts_on > 9.0) result_48V_on = PASS; else result_48V_on = FAIL;
@@ -207,9 +201,7 @@ void test_safety_chain() {
 const int ADC_ZERO_TOLERANCE = 0x40;
 void test_adc_zero() {
     bool adc_zero_fail[10] = {false};
-    board->SetPowerEnable(0);
-    sleep(command_wait_time);
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 100; i++) {
         for (int index = 0; index < num_axes; index++) {
             auto current = board->GetMotorCurrent(index);
             if (i == 0) {
@@ -238,16 +230,15 @@ const float test_current = 1.0;
 const float current_threshold = 0.2;
 
 void test_open_loop_drive() {
+    sleep(command_wait_time);
     auto mv = std::max(mv_volts_on, 10.0f); // avoid super high current caused by erronous mv sense
     quadlet_t pos_dir_adc[num_axes] = {0};
     quadlet_t neg_dir_adc[num_axes] = {0};
-    board->SetPowerEnable(1);
-    sleep(command_wait_time);
     for (int index = 0; index < num_axes; index++) {
         board->SetAmpEnable(index, 1);
         sleep(command_wait_time);
         board->SetMotorVoltageRatio(index, (test_current * resistance) / mv);
-        sleep(100);
+        sleep(command_wait_time);
         pos_dir_adc[index] = board->GetMotorCurrent(index);
         auto i_pos = ((signed)pos_dir_adc[index] - 0x8000) / amps_to_bits[index];
         drive_pos_current[index] = i_pos;
@@ -260,7 +251,6 @@ void test_open_loop_drive() {
         board->SetMotorVoltageRatio(index, -(test_current * resistance) / mv);
         sleep(command_wait_time);
         neg_dir_adc[index] = board->GetMotorCurrent(index);
-        board->SetMotorVoltageRatio(index, 0.0);
         board->SetAmpEnable(index, 0);
         auto i_neg = ((signed)neg_dir_adc[index] - 0x8000) / amps_to_bits[index];
         drive_neg_current[index] = i_neg;
@@ -270,18 +260,16 @@ void test_open_loop_drive() {
             result_drive_neg[index] = FAIL;
         }
     }
-    board->SetPowerEnable(0);
 }
 
 const float current_threshold_closed_loop = 0.05;
 
 
 void test_closed_loop_drive() {
+    sleep(command_wait_time);
     auto mv = std::max(mv_volts_on, 10.0f); // avoid super high current caused by erronous mv sense
     quadlet_t pos_dir_adc[num_axes] = {0};
     quadlet_t neg_dir_adc[num_axes] = {0};
-    board->SetPowerEnable(1);
-    sleep(command_wait_time);
     for (int index = 0; index < num_axes; index++) {
         board->SetAmpEnable(index, 1);
         sleep(command_wait_time);
@@ -299,7 +287,6 @@ void test_closed_loop_drive() {
         board->SetMotorCurrent(index, (-test_current * amps_to_bits[index]) + 0x8000);
         sleep(command_wait_time);
         neg_dir_adc[index] = board->GetMotorCurrent(index);
-        board->SetMotorVoltageRatio(index, 0.0);
         board->SetAmpEnable(index, 0);
         auto i_neg = ((signed)neg_dir_adc[index] - 0x8000) / amps_to_bits[index];
         drive_neg_current_closed_loop[index] = i_neg;
@@ -309,22 +296,26 @@ void test_closed_loop_drive() {
             result_drive_close_loop_neg[index] = FAIL;
         }
     }
-    board->SetPowerEnable(0);
 }
 
 void test_all() {
     testing = true;
     test_safety_relay();
+    board->SetPowerEnable(1);
+    sleep(command_wait_time);
     test_48v();
     // test_safety_chain();
     test_adc_zero();
     test_open_loop_drive();
     test_closed_loop_drive();
+    board->SetPowerEnable(0);
+
     // test_lvds_loopback();
     std::stringstream filename;
     auto t = std::time(nullptr);
     auto tm = *std::localtime(&t);
-    filename << "dRAC_factory_test" << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S") << "_" << BoardSNRead << ".txt";
+    std::filesystem::create_directory("dRAC_test_results");
+    filename << "results/dRAC_" << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S") << "_" << BoardSNRead << ".txt";
     std::ofstream logfile;
     logfile.open(filename.str(), std::fstream::out);
     logfile << "dRAC Factory Test Log" << std::endl;
@@ -512,12 +503,17 @@ int main(int, char**)
         ImGui::Begin("dRAC factory test");
         ImGui::Text("This program tests the dRAC boards with special termination plug. Do not run the test with robot connected. You may damage the robot.");
         ImGui::PushItemWidth(100);
+        ImGui::InputInt("Command to read delay", &command_wait_time, 10, 100);
+        ImGui::SameLine();
+        ImGui::InputInt("kp", &kp);
+        ImGui::SameLine();
+        ImGui::InputInt("ki", &ki);                 
         static int ethfw = 1;
         ImGui::InputInt("Board number", &board_id);  ImGui::SameLine();
         ImGui::RadioButton("Firewire", &ethfw, 0); ImGui::SameLine();
         ImGui::RadioButton("Ethernet", &ethfw, 1); ImGui::SameLine();
 
-        if (ImGui::Button("Connect")) {
+        if (ImGui::Button("Connect", ImVec2(200, 0))) {
             reset_results();
 
             BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
@@ -526,7 +522,7 @@ int main(int, char**)
             board = new AmpIO(board_id);
             Port->AddBoard(board);
             board->WriteWatchdogPeriodInSeconds(0.01);
-            Port->WriteQuadlet(board_id, 0xB100, 0b1110); // bypass safety, except the watchdog
+            Port->WriteQuadlet(board_id, 0xB100, 0b11111110); // bypass safety, except the watchdog
             Port->WriteAllBoards();
             if (Port && Port->IsOK()) Port->AddBoard(board);
             board_connected = (Port && Port->GetNumOfNodes() > 0);
@@ -538,6 +534,11 @@ int main(int, char**)
                 sleep(10, false);
                 BoardSNRead = board->GetQLASerialNumber(0);
                 BoardSN = BoardSNRead;
+
+                for (int i = 0; i < num_axes; i++){
+                    board->WriteCurrentKpRaw(i, kp);
+                    board->WriteCurrentKiRaw(i, ki);
+                }
             }
         }
         ImGui::SameLine();
@@ -546,6 +547,8 @@ int main(int, char**)
         } else {
             ImGui::TextColored(red, "Not connected");
         }
+        // ImGui::SameLine();
+       
         ImGui::Separator();
 
 
