@@ -26,15 +26,18 @@
 
 const std::string version = "1.0.0";
 const auto mv_bit_to_volt = 1.31255e-3;
-int command_wait_time = 50;
-int kp = 100;
-int ki = 10;
+int command_wait_time = 20;
+int kp = 400;
+int ki = 20;
+std::stringstream ss_console;
 
 std::mutex port_mutex;
 std::binary_semaphore rt_rw_sem{0};
 bool testing = false;
 
 void sleep(int t, bool wait_for_rt=true) {
+    if (wait_for_rt)
+        rt_rw_sem.acquire();    
     std::this_thread::sleep_for(std::chrono::milliseconds(t));
     if (wait_for_rt)
         rt_rw_sem.acquire();
@@ -171,10 +174,16 @@ void display_result(result_t r) {
 }
 
 void test_safety_relay(){
-    board->SetSafetyRelay(0);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        board->SetSafetyRelay(0);
+    }
     sleep(50);
     if (board->GetSafetyRelayStatus() == 0) result_safety_relay_open = PASS; else result_safety_relay_open = FAIL;
-    board->SetSafetyRelay(1);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);    
+        board->SetSafetyRelay(1);
+    }
     sleep(50);
     if (board->GetSafetyRelayStatus() == 1) result_safety_relay_close = PASS; else result_safety_relay_close = FAIL;
 }
@@ -235,9 +244,12 @@ void test_open_loop_drive() {
     quadlet_t pos_dir_adc[num_axes] = {0};
     quadlet_t neg_dir_adc[num_axes] = {0};
     for (int index = 0; index < num_axes; index++) {
-        board->SetAmpEnable(index, 1);
-        sleep(command_wait_time);
-        board->SetMotorVoltageRatio(index, (test_current * resistance) / mv);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetAmpEnable(index, 1);
+            // sleep(command_wait_time);
+            board->SetMotorVoltageRatio(index, (test_current * resistance) / mv);
+        }
         sleep(command_wait_time);
         pos_dir_adc[index] = board->GetMotorCurrent(index);
         auto i_pos = ((signed)pos_dir_adc[index] - 0x8000) / amps_to_bits[index];
@@ -247,11 +259,16 @@ void test_open_loop_drive() {
         } else {
             result_drive_pos[index] = FAIL;
         }
-
-        board->SetMotorVoltageRatio(index, -(test_current * resistance) / mv);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetMotorVoltageRatio(index, -(test_current * resistance) / mv);
+        }
         sleep(command_wait_time);
         neg_dir_adc[index] = board->GetMotorCurrent(index);
-        board->SetAmpEnable(index, 0);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetAmpEnable(index, 0);
+        }
         auto i_neg = ((signed)neg_dir_adc[index] - 0x8000) / amps_to_bits[index];
         drive_neg_current[index] = i_neg;
         if ( std::abs(i_neg + test_current) < current_threshold ) {
@@ -271,9 +288,15 @@ void test_closed_loop_drive() {
     quadlet_t pos_dir_adc[num_axes] = {0};
     quadlet_t neg_dir_adc[num_axes] = {0};
     for (int index = 0; index < num_axes; index++) {
-        board->SetAmpEnable(index, 1);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetAmpEnable(index, 1);
+        }
         sleep(command_wait_time);
-        board->SetMotorCurrent(index, (test_current * amps_to_bits[index]) + 0x8000);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetMotorCurrent(index, (test_current * amps_to_bits[index]) + 0x8000);
+        }
         sleep(command_wait_time);
         pos_dir_adc[index] = board->GetMotorCurrent(index);
         auto i_pos = ((signed)pos_dir_adc[index] - 0x8000) / amps_to_bits[index];
@@ -283,11 +306,16 @@ void test_closed_loop_drive() {
         } else {
             result_drive_close_loop_pos[index] = FAIL;
         }
-
-        board->SetMotorCurrent(index, (-test_current * amps_to_bits[index]) + 0x8000);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetMotorCurrent(index, (-test_current * amps_to_bits[index]) + 0x8000);
+        }
         sleep(command_wait_time);
         neg_dir_adc[index] = board->GetMotorCurrent(index);
-        board->SetAmpEnable(index, 0);
+        {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board->SetAmpEnable(index, 0);
+        }
         auto i_neg = ((signed)neg_dir_adc[index] - 0x8000) / amps_to_bits[index];
         drive_neg_current_closed_loop[index] = i_neg;
         if ( std::abs(i_neg + test_current) < current_threshold_closed_loop ) {
@@ -315,7 +343,7 @@ void test_all() {
     auto t = std::time(nullptr);
     auto tm = *std::localtime(&t);
     std::filesystem::create_directory("dRAC_test_results");
-    filename << "results/dRAC_" << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S") << "_" << BoardSNRead << ".txt";
+    filename << "dRAC_test_results/dRAC_" << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S") << "_" << BoardSNRead << ".txt";
     std::ofstream logfile;
     logfile.open(filename.str(), std::fstream::out);
     logfile << "dRAC Factory Test Log" << std::endl;
@@ -375,11 +403,13 @@ void update_all_boards() {
             const std::lock_guard<std::mutex> lock(port_mutex);
             if (Port && Port->IsOK()) {
                 auto w_result = Port->WriteAllBoards();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 auto r_result = Port->ReadAllBoards();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 if (w_result == false || r_result == false) {
                     consecutive_failures++;
+                    std::cerr << "eth fail" << std::endl;
+
                     if (consecutive_failures > 10) {
                         board_connected = false;
                         std::cerr << "Board disconnected" << std::endl;
@@ -513,31 +543,34 @@ int main(int, char**)
         ImGui::RadioButton("Firewire", &ethfw, 0); ImGui::SameLine();
         ImGui::RadioButton("Ethernet", &ethfw, 1); ImGui::SameLine();
 
-        if (ImGui::Button("Connect", ImVec2(200, 0))) {
+        if (ImGui::Button("Connect", ImVec2(300, 0))) {
+            const std::lock_guard<std::mutex> lock(port_mutex);
+            board_connected = false;
             reset_results();
-
             BasePort::ProtocolType protocol = BasePort::PROTOCOL_SEQ_RW;
             std::string portDescription = ethfw ? "udp" : "fw";
-            Port = PortFactory(portDescription.c_str(), std::cout);
-            board = new AmpIO(board_id);
-            Port->AddBoard(board);
-            board->WriteWatchdogPeriodInSeconds(0.01);
-            Port->WriteQuadlet(board_id, 0xB100, 0b11111110); // bypass safety, except the watchdog
-            Port->WriteAllBoards();
-            if (Port && Port->IsOK()) Port->AddBoard(board);
-            board_connected = (Port && Port->GetNumOfNodes() > 0);
-            BoardSN.clear();
-            BoardSNRead.clear();
+            std::stringstream().swap(ss_console);
+            Port = PortFactory(portDescription.c_str(), ss_console);
+            if (Port && Port->IsOK()) {
+                board = new AmpIO(board_id);
+                Port->AddBoard(board);
+                board_connected = (Port && Port->GetNumOfNodes() > 0);
+                BoardSN.clear();
+                BoardSNRead.clear();
 
-            if (board_connected) {
-                const std::lock_guard<std::mutex> lock(port_mutex);
-                sleep(10, false);
-                BoardSNRead = board->GetQLASerialNumber(0);
-                BoardSN = BoardSNRead;
-
-                for (int i = 0; i < num_axes; i++){
-                    board->WriteCurrentKpRaw(i, kp);
-                    board->WriteCurrentKiRaw(i, ki);
+                if (board_connected) {
+                    // const std::lock_guard<std::mutex> lock(port_mutex);
+                    sleep(10, false);
+                    BoardSNRead = board->GetQLASerialNumber(0);
+                    BoardSN = BoardSNRead;
+                    board->WriteWatchdogPeriodInSeconds(0.1);
+                    Port->WriteQuadlet(board_id, 0xB100, 0b11111110); // bypass safety, except the watchdog
+                    Port->WriteAllBoards();                        
+                    for (int i = 0; i < num_axes; i++){
+                        board->WriteCurrentKpRaw(i, kp);
+                        board->WriteCurrentKiRaw(i, ki);
+                        board->WriteCurrentITermLimitRaw(i, 100);
+                    }
                 }
             }
         }
@@ -556,7 +589,7 @@ int main(int, char**)
         if (board_connected) {
 
             ImGui::InputText("SN to program", &BoardSN); ImGui::SameLine();
-            if (ImGui::Button("Program dRAC SN")) {
+            if (ImGui::Button("Program dRAC SN", ImVec2(300, 0))) {
                 const std::lock_guard<std::mutex> lock(port_mutex);
 
                 std::string BoardType = "dRA";
@@ -619,8 +652,31 @@ int main(int, char**)
                 ImGui::SameLine();
                 ImGui::TextColored(green, "Testing...");
             }
-            // if (ImGui::Button("Test lvds")) {
-            //     std::thread(test_lvds_loopback).detach();
+            // if (ImGui::Button("Test thread")) {
+            //     // std::thread(test_lvds_loopback).detach();
+            //     // const std::lock_guard<std::mutex> lock(port_mutex);
+            //     bool write_state = 0;
+                
+            //     board->SetPowerEnable(1);
+            //     sleep(10);
+            //     int error_count = 0;
+            //     for (int i = 0; i< 1000; i++) {
+            //         {
+            //             const std::lock_guard<std::mutex> lock(port_mutex);
+            //             board->SetAmpEnable(0, write_state);
+            //         }
+            //         // Port->WriteAllBoards();
+            //         // std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            //         // Port->ReadAllBoards();
+            //         // std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            //         sleep(10);
+
+            //         auto read_state = board->GetAmpEnable(0);
+            //         if (read_state != write_state) error_count ++;
+            //         write_state ^= 1;
+            //     }
+            //     board->SetPowerEnable(0);
+            //     std::cout << "err count " << error_count << std::endl; 
             // }
 
 
@@ -822,9 +878,11 @@ int main(int, char**)
 
 
             ImGui::EndTable();
+            ImGui::Separator();
 
 
         }
+        ImGui::Text(ss_console.str().c_str());
 
 
 
