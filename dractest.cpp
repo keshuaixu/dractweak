@@ -76,6 +76,9 @@ float motor_voltage_read[num_axes];
 int amp_fault_codes[num_axes];
 float mv = 12.0;
 const float amps_to_bits[10] = {4800.0, 4800.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0, 16000.0};
+const float internal_res_hr = 0.40;
+const float internal_res_lr = 0.46;
+const float internal_resistance[10] = {internal_res_hr,internal_res_hr,internal_res_lr,internal_res_lr,internal_res_lr,internal_res_lr,internal_res_lr,internal_res_lr,internal_res_lr,internal_res_lr};
 const char* channel_names[10] = {"M1", "M2", "M3", "M4", "M5", "M6", "M7", "B1", "B2", "B3"};
 const char* amp_fault_text[16] = {"-", "ADC saturated", "Current deviation", "HW overcurrent", "HW overtemp", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined", "Undefined"};
 static std::string BoardSN;
@@ -234,7 +237,7 @@ void test_adc_zero() {
     }
 }
 
-const float resistance = 0.5;
+// const float resistance = 0.5;
 const float test_current = 1.0;
 const float current_threshold = 0.2;
 
@@ -247,8 +250,8 @@ void test_open_loop_drive() {
         {
             const std::lock_guard<std::mutex> lock(port_mutex);
             board->SetAmpEnable(index, 1);
-            // sleep(command_wait_time);
-            board->SetMotorVoltageRatio(index, (test_current * resistance) / mv);
+            sleep(command_wait_time, false);
+            board->SetMotorVoltageRatio(index, (test_current * internal_resistance[index]) / mv);
         }
         sleep(command_wait_time);
         pos_dir_adc[index] = board->GetMotorCurrent(index);
@@ -261,7 +264,7 @@ void test_open_loop_drive() {
         }
         {
             const std::lock_guard<std::mutex> lock(port_mutex);
-            board->SetMotorVoltageRatio(index, -(test_current * resistance) / mv);
+            board->SetMotorVoltageRatio(index, -(test_current * internal_resistance[index]) / mv);
         }
         sleep(command_wait_time);
         neg_dir_adc[index] = board->GetMotorCurrent(index);
@@ -290,6 +293,7 @@ void test_closed_loop_drive() {
     for (int index = 0; index < num_axes; index++) {
         {
             const std::lock_guard<std::mutex> lock(port_mutex);
+            sleep(command_wait_time, false);
             board->SetAmpEnable(index, 1);
         }
         sleep(command_wait_time);
@@ -653,23 +657,23 @@ int main(int, char**)
                 ImGui::TextColored(green, "Testing...");
             }
             // if (ImGui::Button("Test thread")) {
-            //     // std::thread(test_lvds_loopback).detach();
-            //     // const std::lock_guard<std::mutex> lock(port_mutex);
+            //     // board
+            //     const std::lock_guard<std::mutex> lock(port_mutex);
             //     bool write_state = 0;
                 
             //     board->SetPowerEnable(1);
-            //     sleep(10);
+            //     // sleep(10);
             //     int error_count = 0;
-            //     for (int i = 0; i< 1000; i++) {
+            //     for (int i = 0; i< 50; i++) {
             //         {
-            //             const std::lock_guard<std::mutex> lock(port_mutex);
+            //             // const std::lock_guard<std::mutex> lock(port_mutex);
             //             board->SetAmpEnable(0, write_state);
             //         }
-            //         // Port->WriteAllBoards();
-            //         // std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            //         // Port->ReadAllBoards();
-            //         // std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            //         sleep(10);
+            //         Port->WriteAllBoards();
+            //         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            //         Port->ReadAllBoards();
+            //         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            //         // sleep(10);
 
             //         auto read_state = board->GetAmpEnable(0);
             //         if (read_state != write_state) error_count ++;

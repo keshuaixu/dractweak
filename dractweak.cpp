@@ -487,7 +487,7 @@ int main(int argc, char** argv)
             // ImGui::Text("motor power = %s", board->GetPowerEnable() ? "on" : "off");
             // ImGui::TableNextColumn();
             if (ImGui::Button("bypass safety")) {
-                Port->WriteQuadlet(BoardId, 0xB100, 1);
+                Port->WriteQuadlet(BoardId, 0xB100, 0b111110);
             }
             ImGui::SameLine();
             if (ImGui::Button("unbypass")) {
