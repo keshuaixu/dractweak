@@ -332,15 +332,31 @@ void test_closed_loop_drive() {
 
 void test_all() {
     testing = true;
+
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        Port->WriteQuadlet(board_id, 0xB100, 0b11111110); // bypass safety, except the watchdog
+        for (int i = 0; i < num_axes; i++) {
+            board->WriteCurrentKpRaw(i, kp);
+            board->WriteCurrentKiRaw(i, ki);
+            board->WriteCurrentITermLimitRaw(i, 100);
+        }
+    }
     test_safety_relay();
-    board->SetPowerEnable(1);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        board->SetPowerEnable(1);
+    }
     sleep(command_wait_time);
     test_48v();
     // test_safety_chain();
     test_adc_zero();
     test_open_loop_drive();
     test_closed_loop_drive();
-    board->SetPowerEnable(0);
+    {
+        const std::lock_guard<std::mutex> lock(port_mutex);
+        board->SetPowerEnable(0);
+    }
 
     // test_lvds_loopback();
     std::stringstream filename;
@@ -414,7 +430,7 @@ void update_all_boards() {
                     consecutive_failures++;
                     std::cerr << "eth fail" << std::endl;
 
-                    if (consecutive_failures > 10) {
+                    if (consecutive_failures > 200) {
                         board_connected = false;
                         std::cerr << "Board disconnected" << std::endl;
                     }
@@ -424,6 +440,7 @@ void update_all_boards() {
                 rt_rw_sem.release();
             }
         } else {
+            consecutive_failures = 0;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -558,6 +575,7 @@ int main(int, char**)
             if (Port && Port->IsOK()) {
                 board = new AmpIO(board_id);
                 Port->AddBoard(board);
+                board_connected = (Port && Port->GetNumOfNodes() > 0);
                 board_connected = (Port && Port->GetNumOfNodes() > 0);
                 BoardSN.clear();
                 BoardSNRead.clear();
