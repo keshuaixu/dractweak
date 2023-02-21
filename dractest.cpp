@@ -347,7 +347,7 @@ void test_all() {
         const std::lock_guard<std::mutex> lock(port_mutex);
         board->SetPowerEnable(1);
     }
-    sleep(command_wait_time);
+    sleep(1000);
     test_48v();
     // test_safety_chain();
     test_adc_zero();
@@ -572,6 +572,7 @@ int main(int, char**)
             std::string portDescription = ethfw ? "udp" : "fw";
             std::stringstream().swap(ss_console);
             Port = PortFactory(portDescription.c_str(), ss_console);
+	    sleep(500, false);
             if (Port && Port->IsOK()) {
                 board = new AmpIO(board_id);
                 Port->AddBoard(board);
