@@ -347,7 +347,7 @@ void test_all() {
         const std::lock_guard<std::mutex> lock(port_mutex);
         board->SetPowerEnable(1);
     }
-    sleep(command_wait_time);
+    sleep(500);
     test_48v();
     // test_safety_chain();
     test_adc_zero();
