@@ -55,5 +55,12 @@ target_sources(dractest PUBLIC ${COMMON_FILES})
 target_link_libraries(dractest Amp1394  OpenGL::GL OpenGL::GLU glfw GLEW::GLEW ${CMAKE_DL_LIBS})
 set_property(TARGET dractest PROPERTY CXX_STANDARD 20)
 
+add_executable(dractune dractune.cpp)
+target_sources(dractune PUBLIC ${COMMON_FILES})
+target_link_libraries(dractune Amp1394  OpenGL::GL OpenGL::GLU glfw GLEW::GLEW ${CMAKE_DL_LIBS})
+set_property(TARGET dractune PROPERTY CXX_STANDARD 20)
+
+
 install(TARGETS dractweak DESTINATION bin)
 install(TARGETS dractest DESTINATION bin)
+install(TARGETS dractune DESTINATION bin)
